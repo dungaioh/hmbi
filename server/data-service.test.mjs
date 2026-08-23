@@ -93,6 +93,24 @@ test("fetchScopedDeliveries queries each assigned customer and deduplicates deli
   assert.equal(result.queryCount, 2);
 });
 
+test("fetchScopedDeliveries exposes the customer code when one customer exceeds the page cap", async () => {
+  const fetchImpl = async () => new Response(JSON.stringify({
+    code: "OK",
+    data: { rows: [{ billLineId: "L1" }, { billLineId: "L2" }], page: 1, size: 2 },
+  }), { status: 200, headers: { "content-type": "application/json" } });
+
+  await assert.rejects(fetchScopedDeliveries({
+    baseUrl: "http://example.test:8098",
+    token: "secret-key",
+    employeeCode: "E001",
+    relationshipRows: [{ customerCode: "C-LARGE" }],
+    oldestRequiredPeriod: "2025-08",
+    pageSize: 2,
+    maxPages: 1,
+    fetchImpl,
+  }), /sales-deliveries.*customerCode=C-LARGE/);
+});
+
 test("buildSnapshotFromResources derives BI metrics and agent facts from EKP rows", () => {
   const identity = {
     id: "E001",

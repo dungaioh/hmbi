@@ -228,6 +228,7 @@ export async function fetchScopedDeliveries({
         });
       } catch (error) {
         if (error?.expose) {
+          error.message = `${error.message}（customerCode=${customerCode}）`;
           error.detail = `customerCode=${customerCode}${error.detail ? `；${error.detail}` : ""}`;
         }
         throw error;
