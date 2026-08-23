@@ -43,6 +43,7 @@ DATA_API_PREFIX=/open-api/v1
 DATA_API_TOKEN=ekp_<clientCode>.<secret>
 DATA_API_MODE=live
 DATA_API_EMPLOYEE_CODE=E001
+DATA_API_DELIVERY_CONCURRENCY=3
 
 # 用于验证有历史数据的月份；留空表示当前月份
 DATA_API_PERIOD=2026-08
@@ -60,7 +61,7 @@ DATA_API_SEASONAL_DEADLINE=2026-08-31
 DATA_API_NEW_PRODUCT_MATCH=新品
 ```
 
-`DATA_API_EMPLOYEE_CODE` 必须是 EKP 中存在的真实员工工号。当前界面的身份切换仍是 POC 模拟器；该环境变量会把 live 测试限制在一个真实员工范围内，避免无意读取全量数据。
+`DATA_API_EMPLOYEE_CODE` 必须是 EKP 中存在的真实员工工号。适配器先从 `customer-employees` 读取该员工的责任客户，再用文档支持的 `customerCode` 逐户查询 `sales-deliveries`，避免无效的员工字段过滤退化为全量查询。`DATA_API_DELIVERY_CONCURRENCY` 控制并发客户数，默认 3；若 EKP 返回 429，可将它降为 1。
 
 金额字段必须以 OpenAPI JSON 为准：
 
@@ -123,7 +124,7 @@ curl -sS http://127.0.0.1:8787/api/health
 curl -sS 'http://127.0.0.1:8787/api/data-check?role=customer-manager'
 ```
 
-成功标准：`dataApiMode` 为 `live`、`dataApiContract` 为 `ekp-v1`，并且 `data-check` 返回 `"ok":true`、`source.mode` 为 `live`、`rowCounts` 至少一类大于 0。确认数据后测试 Agent：
+成功标准：`dataApiMode` 为 `live`、`dataApiContract` 为 `ekp-v1`，并且 `data-check` 返回 `"ok":true`、`source.mode` 为 `live`、`rowCounts` 至少一类大于 0。`source.diagnostics.deliveryScope` 应为 `customerCode`，`deliveryQueryCount` 应等于去重后的责任客户数。确认数据后测试 Agent：
 
 ```bash
 curl -sS -X POST 'http://127.0.0.1:8787/api/agent/refresh?role=customer-manager'

@@ -4,6 +4,7 @@ import {
   buildSnapshotFromResources,
   extractRows,
   fetchAllRows,
+  fetchScopedDeliveries,
 } from "./data-service.mjs";
 
 test("extractRows supports the EKP data.rows response envelope", () => {
@@ -49,6 +50,47 @@ test("fetchAllRows follows EKP GET, X-API-Key and page query contract", async ()
   assert.equal(new URL(requests[0].url).pathname, "/open-api/v1/sales-targets");
   assert.equal(new URL(requests[0].url).searchParams.get("employeeCode"), "E001");
   assert.equal(new URL(requests[1].url).searchParams.get("page"), "2");
+});
+
+test("fetchScopedDeliveries queries each assigned customer and deduplicates delivery lines", async () => {
+  const requests = [];
+  const fetchImpl = async (url) => {
+    const parsed = new URL(url);
+    requests.push(parsed);
+    const customerCode = parsed.searchParams.get("customerCode");
+    const rows = customerCode === "C1"
+      ? [{ billLineId: "L1", customerCode }, { billLineId: "SHARED", customerCode }]
+      : [{ billLineId: "L2", customerCode }, { billLineId: "SHARED", customerCode }];
+    return new Response(JSON.stringify({
+      code: "OK",
+      data: { rows, page: 1, size: 500, total: rows.length },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+
+  const result = await fetchScopedDeliveries({
+    baseUrl: "http://example.test:8098",
+    apiPrefix: "/open-api/v1",
+    token: "secret-key",
+    timeoutMs: 1000,
+    pageSize: 500,
+    maxPages: 40,
+    employeeCode: "E001",
+    relationshipRows: [
+      { customerCode: "C1" },
+      { customerCode: "C2" },
+      { customerCode: "C1" },
+    ],
+    oldestRequiredPeriod: "2025-08",
+    concurrency: 2,
+    fetchImpl,
+  });
+
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests.map((url) => url.searchParams.get("customerCode")).sort(), ["C1", "C2"]);
+  assert.ok(requests.every((url) => !url.searchParams.has("employeeCode")));
+  assert.deepEqual(result.rows.map((row) => row.billLineId).sort(), ["L1", "L2", "SHARED"]);
+  assert.equal(result.scope, "customerCode");
+  assert.equal(result.queryCount, 2);
 });
 
 test("buildSnapshotFromResources derives BI metrics and agent facts from EKP rows", () => {

@@ -159,6 +159,90 @@ export async function fetchAllRows({
   return rows;
 }
 
+function uniqueCustomerCodes(rows) {
+  return [...new Set(rows
+    .map((row) => String(row?.customerCode || "").trim())
+    .filter(Boolean))];
+}
+
+function deduplicateDeliveryRows(rows) {
+  const seenLineIds = new Set();
+  return rows.filter((row) => {
+    const lineId = String(row?.billLineId || "").trim();
+    if (!lineId) return true;
+    if (seenLineIds.has(lineId)) return false;
+    seenLineIds.add(lineId);
+    return true;
+  });
+}
+
+export async function fetchScopedDeliveries({
+  baseUrl,
+  apiPrefix = DEFAULT_API_PREFIX,
+  token,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  pageSize = DEFAULT_PAGE_SIZE,
+  maxPages = DEFAULT_MAX_PAGES,
+  employeeCode,
+  relationshipRows = [],
+  oldestRequiredPeriod,
+  concurrency = 3,
+  fetchImpl = fetch,
+}) {
+  const customerCodes = uniqueCustomerCodes(relationshipRows);
+  const common = {
+    baseUrl,
+    apiPrefix,
+    token,
+    timeoutMs,
+    pageSize,
+    maxPages,
+    resource: "sales-deliveries",
+    fetchImpl,
+    stopAfterPage: (pageRows) => {
+      const datedRows = pageRows.map((row) => monthKey(row?.billDate)).filter(Boolean);
+      return datedRows.length > 0 && datedRows.every((key) => key < oldestRequiredPeriod);
+    },
+  };
+
+  if (!customerCodes.length) {
+    const rows = await fetchAllRows({
+      ...common,
+      params: { employeeCode, isDeleted: 0, sortBy: "billDate", direction: "desc" },
+    });
+    return { rows: deduplicateDeliveryRows(rows), scope: "employeeCode", queryCount: 1 };
+  }
+
+  const results = new Array(customerCodes.length);
+  let nextIndex = 0;
+  const safeConcurrency = Math.max(1, Math.min(customerCodes.length, Number(concurrency) || 3));
+  async function worker() {
+    while (nextIndex < customerCodes.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      const customerCode = customerCodes[index];
+      try {
+        results[index] = await fetchAllRows({
+          ...common,
+          params: { customerCode, isDeleted: 0, sortBy: "billDate", direction: "desc" },
+        });
+      } catch (error) {
+        if (error?.expose) {
+          error.detail = `customerCode=${customerCode}${error.detail ? `；${error.detail}` : ""}`;
+        }
+        throw error;
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: safeConcurrency }, () => worker()));
+
+  return {
+    rows: deduplicateDeliveryRows(results.flat()),
+    scope: "customerCode",
+    queryCount: customerCodes.length,
+  };
+}
+
 function currentPeriod(now = new Date()) {
   return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
 }
@@ -397,6 +481,7 @@ function dataConfig(identity, now = new Date()) {
     timeoutMs: Number(process.env.DATA_API_TIMEOUT_MS || DEFAULT_TIMEOUT_MS),
     maxPages: Number(process.env.DATA_API_MAX_PAGES || DEFAULT_MAX_PAGES),
     pageSize: Number(process.env.DATA_API_PAGE_SIZE || DEFAULT_PAGE_SIZE),
+    deliveryConcurrency: Number(process.env.DATA_API_DELIVERY_CONCURRENCY || 3),
     employeeCode,
     period: validPeriod(process.env.DATA_API_PERIOD, now),
     amountField: String(process.env.DATA_API_SALES_AMOUNT_FIELD || "").trim(),
@@ -421,7 +506,7 @@ async function fetchLiveSnapshot({ identity }) {
   };
   const oldestRequiredPeriod = previousYearPeriod(config.period);
 
-  const [relationshipRows, targetRows, deliveryRows] = await Promise.all([
+  const [relationshipRows, targetRows] = await Promise.all([
     fetchAllRows({
       ...common,
       resource: "customer-employees",
@@ -438,16 +523,15 @@ async function fetchLiveSnapshot({ identity }) {
         direction: "desc",
       },
     }),
-    fetchAllRows({
-      ...common,
-      resource: "sales-deliveries",
-      params: { employeeCode: config.employeeCode, isDeleted: 0, sortBy: "billDate", direction: "desc" },
-      stopAfterPage: (pageRows) => {
-        const datedRows = pageRows.map((row) => monthKey(row?.billDate)).filter(Boolean);
-        return datedRows.length > 0 && datedRows.every((key) => key < oldestRequiredPeriod);
-      },
-    }),
   ]);
+  const deliveryResult = await fetchScopedDeliveries({
+    ...common,
+    employeeCode: config.employeeCode,
+    relationshipRows,
+    oldestRequiredPeriod,
+    concurrency: config.deliveryConcurrency,
+  });
+  const deliveryRows = deliveryResult.rows;
 
   if (!relationshipRows.length && !targetRows.length && !deliveryRows.length) {
     throw exposedError("EKP API 未返回当前员工范围的数据", {
@@ -455,7 +539,10 @@ async function fetchLiveSnapshot({ identity }) {
     });
   }
 
-  return buildSnapshotFromResources({ identity, relationshipRows, targetRows, deliveryRows, config, now });
+  const snapshot = buildSnapshotFromResources({ identity, relationshipRows, targetRows, deliveryRows, config, now });
+  snapshot.diagnostics.deliveryScope = deliveryResult.scope;
+  snapshot.diagnostics.deliveryQueryCount = deliveryResult.queryCount;
+  return snapshot;
 }
 
 export async function getBoardData({ role, identity }) {
