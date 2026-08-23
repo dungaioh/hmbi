@@ -111,9 +111,19 @@ export function getDemoIdentity(role = "customer-manager") {
 export function getDemoSnapshot(role = "customer-manager") {
   const selectedRole = roles[role] ? role : "customer-manager";
   const now = new Date();
+  const metrics = roleData[selectedRole].metrics;
   return {
     identity: roles[selectedRole],
     ...roleData[selectedRole],
+    metrics,
+    trendLabels: ["2月", "3月", "4月", "5月", "6月", "7月", "8月"],
+    categoryMix: [
+      { name: "日消烘焙", value: 58, share: 58 },
+      { name: "季节礼品", value: 29, share: 29 },
+      { name: "其他品类", value: 13, share: 13 },
+    ],
+    availableMetricIds: Object.keys(metrics),
+    unavailableMetricIds: [],
     period: "2026-08",
     asOf: new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 23, 59, 0).toISOString(),
   };

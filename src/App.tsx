@@ -137,31 +137,31 @@ function SectionHeading({ kicker, title, action }: { kicker: string; title: stri
 
 function SprintCard({ card, board }: { card: CardConfig; board: BoardResponse }) {
   const m = board.metrics;
-  const attainment = Number(m.seasonal_attainment || 0);
+  const hasAttainment = m.seasonal_attainment !== undefined;
+  const attainment = hasAttainment ? Number(m.seasonal_attainment) : 0;
+  const moneyValue = (id: string) => <strong>{formatMetric(m[id])}{m[id] !== undefined && <i>万</i>}</strong>;
   return (
     <article className="bi-card sprint-card">
       <div className="card-kicker"><Target size={15} />{card.eyebrow}</div>
-      <div className="sprint-head"><div><h3>{card.title}</h3><p>距关键销售节点 <strong>{m.days_remaining ?? "—"}</strong> 天</p></div><div className="target-ring"><span>{Math.round(attainment)}%</span></div></div>
+      <div className="sprint-head"><div><h3>{card.title}</h3><p>距关键销售节点 <strong>{m.days_remaining ?? "—"}</strong>{m.days_remaining !== undefined && " 天"}</p></div><div className="target-ring"><span>{hasAttainment ? `${Math.round(attainment)}%` : "—"}</span></div></div>
       <div className="sprint-progress"><span style={{ width: `${Math.min(attainment, 100)}%` }} /></div>
       <div className="sprint-stats">
-        <div><small>目标</small><strong>{formatMetric(m.seasonal_target)}<i>万</i></strong></div>
-        <div><small>已达</small><strong>{formatMetric(m.seasonal_achieved)}<i>万</i></strong></div>
-        <div className="accent"><small>缺口</small><strong>{formatMetric(m.seasonal_gap)}<i>万</i></strong></div>
-        <div className="accent"><small>需日均</small><strong>{formatMetric(m.daily_required)}<i>万</i></strong></div>
+        <div><small>目标</small>{moneyValue("seasonal_target")}</div>
+        <div><small>已达</small>{moneyValue("seasonal_achieved")}</div>
+        <div className="accent"><small>缺口</small>{moneyValue("seasonal_gap")}</div>
+        <div className="accent"><small>需日均</small>{moneyValue("daily_required")}</div>
       </div>
     </article>
   );
 }
 
 function HealthCard({ card, board }: { card: CardConfig; board: BoardResponse }) {
-  const active = Number(board.metrics.active_customers || 0);
-  const total = Number(board.metrics.total_customers || 0);
   const stats = [
-    { label: "活跃客户", value: active, suffix: `/${total}`, icon: Users, tone: "purple" },
-    { label: "铺市率", value: Number(board.metrics.distribution_rate || 0), suffix: "%", icon: Store, tone: "orange" },
-    { label: "新品铺市", value: Number(board.metrics.new_distribution_rate || 0), suffix: "%", icon: TrendingUp, tone: "pink" },
+    { label: "活跃客户", value: board.metrics.active_customers, suffix: board.metrics.total_customers !== undefined ? `/${board.metrics.total_customers}` : "", icon: Users, tone: "purple" },
+    { label: "客户覆盖", value: board.metrics.distribution_rate, suffix: "%", icon: Store, tone: "orange" },
+    { label: "新品覆盖", value: board.metrics.new_distribution_rate, suffix: "%", icon: TrendingUp, tone: "pink" },
   ];
-  return <article className="bi-card health-card"><div className="card-kicker purple"><Activity size={15} />{card.eyebrow}</div><div className="health-title"><div><h3>{card.title}</h3><p>客户活跃与终端覆盖健康度</p></div><span className="positive-pill">环比上升</span></div><div className="health-grid">{stats.map(({ label, value, suffix, icon: Icon, tone }) => <div className="health-stat" key={label}><span className={`stat-icon ${tone}`}><Icon size={17} /></span><div><strong>{Number.isInteger(value) ? value : value.toFixed(1)}<i>{suffix}</i></strong><small>{label}</small></div></div>)}</div></article>;
+  return <article className="bi-card health-card"><div className="card-kicker purple"><Activity size={15} />{card.eyebrow}</div><div className="health-title"><div><h3>{card.title}</h3><p>客户关系与有效出库实时汇总</p></div><span className="positive-pill">API 汇总</span></div><div className="health-grid">{stats.map(({ label, value, suffix, icon: Icon, tone }) => <div className="health-stat" key={label}><span className={`stat-icon ${tone}`}><Icon size={17} /></span><div><strong>{formatMetric(value)}{value !== undefined && <i>{suffix}</i>}</strong><small>{label}</small></div></div>)}</div></article>;
 }
 
 function KpiGridCard({ card, board }: { card: CardConfig; board: BoardResponse }) {
@@ -170,7 +170,7 @@ function KpiGridCard({ card, board }: { card: CardConfig; board: BoardResponse }
 }
 
 function TrendCard({ card, board }: { card: CardConfig; board: BoardResponse }) {
-  return <article className="bi-card chart-card"><div className="card-kicker purple"><TrendingUp size={15} />{card.eyebrow}</div><h3>{card.title}</h3><TrendChart values={board.trend} compact /></article>;
+  return <article className="bi-card chart-card"><div className="card-kicker purple"><TrendingUp size={15} />{card.eyebrow}</div><h3>{card.title}</h3><TrendChart values={board.trend} labels={board.trendLabels} compact /></article>;
 }
 
 function ConfiguredCard({ card, board }: { card: CardConfig; board: BoardResponse }) {
@@ -224,13 +224,14 @@ function ActionDashboard({ board, refreshing, onRefreshAgent }: { board: BoardRe
   return <><div className="page-intro"><div><span className="date-line"><Clock3 size={14} />{new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", weekday: "short" }).format(new Date())}</span><h1>早上好，{board.identity.name}</h1><p>先处理最影响目标的事。数据截至 {shortDate(board.asOf)}。</p></div><div className="hero-score"><span>今日经营信号</span><strong>{board.agent.actions.length || "—"}</strong><small>项待关注</small></div></div><section><SectionHeading kicker="ACTION METRICS" title="目标与健康度" /><div className="metric-layout">{primaryCards.map((card) => <ConfiguredCard key={card.id} card={card} board={board} />)}</div></section><AgentSection board={board} refreshing={refreshing} onRefresh={onRefreshAgent} /></>;
 }
 
-function TrendChart({ values, compact = false }: { values: number[]; compact?: boolean }) {
+function TrendChart({ values, labels, compact = false }: { values: number[]; labels?: string[]; compact?: boolean }) {
   const safeValues = values.length ? values : [0, 0, 0, 0, 0, 0, 0];
+  const safeLabels = labels?.length === safeValues.length ? labels : ["2月", "3月", "4月", "5月", "6月", "7月", "8月"];
   const option: EChartsCoreOption = {
     animationDuration: 800,
     grid: { left: compact ? 2 : 18, right: compact ? 2 : 12, top: 24, bottom: compact ? 0 : 28, containLabel: !compact },
     tooltip: { trigger: "axis", backgroundColor: "#2a1846", borderWidth: 0, textStyle: { color: "#fff" } },
-    xAxis: { type: "category", boundaryGap: false, data: ["2月", "3月", "4月", "5月", "6月", "7月", "8月"], axisLine: { lineStyle: { color: "#e8e1f2" } }, axisLabel: { show: !compact, color: "#8b7c9f" }, axisTick: { show: false } },
+    xAxis: { type: "category", boundaryGap: false, data: safeLabels, axisLine: { lineStyle: { color: "#e8e1f2" } }, axisLabel: { show: !compact, color: "#8b7c9f" }, axisTick: { show: false } },
     yAxis: { type: "value", show: !compact, splitLine: { lineStyle: { color: "#f0ebf6" } }, axisLabel: { color: "#8b7c9f" } },
     series: [{ type: "line", data: safeValues, smooth: 0.35, symbol: "circle", symbolSize: compact ? 5 : 7, lineStyle: { width: 3, color: "#ff6c00" }, itemStyle: { color: "#ff6c00", borderColor: "#fff", borderWidth: 2 }, areaStyle: { color: { type: "linear", x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: "rgba(255,108,0,.25)" }, { offset: 1, color: "rgba(255,108,0,0)" }] } } }],
   };
@@ -297,7 +298,7 @@ function ChatBI({ board, open, onClose }: { board: BoardResponse; open: boolean;
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const quickQuestions = ["季节品目标缺口还有多大？", "回款与库存周转情况如何？", "客户活跃和新品铺市表现怎样？"];
+  const quickQuestions = ["季节品目标缺口还有多大？", "本期出库额和同比表现如何？", "责任客户活跃覆盖情况怎样？"];
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -331,7 +332,19 @@ function OverviewDashboard({ board }: { board: BoardResponse }) {
   const overview = board.cards.find((card) => card.id === "sales-overview");
   const catalogMap = new Map(board.catalog.map((item) => [item.id, item]));
   const kpis = overview?.metricIds ?? ["sales_amount", "sales_yoy", "collection_rate", "inventory_turnover"];
-  return <><div className="page-intro compact"><div><span className="date-line"><LayoutDashboard size={14} />经营全景</span><h1>{board.identity.orgName}</h1><p>描述性指标放在二屏；需要更多数据时，直接向问数 Agent 提问。</p></div><button className="chatbi-launch" onClick={() => setChatOpen(true)}><span><MessageCircle size={19} /></span><div><small>CHAT WITH DATA</small><strong>向 Agent 问数</strong></div><ArrowRight size={16} /></button></div><div className="overview-kpis">{kpis.map((id) => { const metric = catalogMap.get(id); return <article key={id}><span>{metric?.name}</span><strong>{formatMetric(board.metrics[id], metric)}<i>{metric?.format.includes("Percent") || metric?.format === "percent" ? "" : metric?.unit}</i></strong><small><TrendingUp size={13} />数据截至 T-1</small></article>; })}</div><div className="overview-grid"><article className="bi-card wide-chart"><div className="chart-head"><div><span>近 7 个月</span><h2>销售出库趋势</h2></div><span className="positive-pill">同比 +{board.metrics.sales_yoy}%</span></div><TrendChart values={board.trend} /></article><article className="bi-card structure-card"><div className="chart-head"><div><span>品类贡献</span><h2>结构概览</h2></div></div><div className="donut"><div><strong>58%</strong><span>日消品</span></div></div><ul><li><span className="orange" />日消烘焙 <strong>58%</strong></li><li><span className="purple" />季节礼品 <strong>29%</strong></li><li><span className="pink" />其他品类 <strong>13%</strong></li></ul></article></div><ChatBI key={board.identity.id} board={board} open={chatOpen} onClose={() => setChatOpen(false)} /></>;
+  const mix = board.categoryMix ?? [];
+  const mixColors = ["#ff6c00", "#7b4ce2", "#ec4f91", "#2f9c95", "#8b7c9f"];
+  let cumulative = 0;
+  const gradient = mix.length
+    ? `conic-gradient(${mix.map((item, index) => {
+      const start = cumulative;
+      cumulative += item.share;
+      return `${mixColors[index % mixColors.length]} ${start}% ${cumulative}%`;
+    }).join(", ")})`
+    : undefined;
+  const yoy = board.metrics.sales_yoy;
+
+  return <><div className="page-intro compact"><div><span className="date-line"><LayoutDashboard size={14} />经营全景</span><h1>{board.identity.orgName}</h1><p>描述性指标放在二屏；需要更多数据时，直接向问数 Agent 提问。</p></div><button className="chatbi-launch" onClick={() => setChatOpen(true)}><span><MessageCircle size={19} /></span><div><small>CHAT WITH DATA</small><strong>向 Agent 问数</strong></div><ArrowRight size={16} /></button></div><div className="overview-kpis">{kpis.map((id) => { const metric = catalogMap.get(id); const value = board.metrics[id]; return <article key={id}><span>{metric?.name}</span><strong>{formatMetric(value, metric)}{value !== undefined && <i>{metric?.format.includes("Percent") || metric?.format === "percent" ? "" : metric?.unit}</i>}</strong><small><TrendingUp size={13} />截至 {shortDate(board.asOf)}</small></article>; })}</div><div className="overview-grid"><article className="bi-card wide-chart"><div className="chart-head"><div><span>近 7 个月</span><h2>销售出库趋势</h2></div><span className="positive-pill">{yoy === undefined ? "同比暂无" : `同比 ${formatMetric(yoy, catalogMap.get("sales_yoy"))}`}</span></div><TrendChart values={board.trend} labels={board.trendLabels} /></article><article className="bi-card structure-card"><div className="chart-head"><div><span>品类贡献</span><h2>真实出库结构</h2></div></div>{mix.length ? <><div className="donut" style={{ background: gradient }}><div><strong>{formatMetric(mix[0].share)}%</strong><span>{mix[0].name}</span></div></div><ul>{mix.map((item, index) => <li key={item.name}><span style={{ background: mixColors[index % mixColors.length] }} />{item.name} <strong>{formatMetric(item.share)}%</strong></li>)}</ul></> : <div className="empty-actions"><CircleAlert size={20} /><div><strong>暂无品类金额结构</strong><p>请按 OpenAPI 字段字典配置 DATA_API_SALES_AMOUNT_FIELD。</p></div></div>}</article></div><ChatBI key={board.identity.id} board={board} open={chatOpen} onClose={() => setChatOpen(false)} /></>;
 }
 
 export default function App() {

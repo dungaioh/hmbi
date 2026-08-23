@@ -35,25 +35,33 @@ function parseJson(content) {
   return JSON.parse(content.replace(/^```json\s*|\s*```$/g, ""));
 }
 
-function normalizeActions(payload, key) {
+export function normalizeActions(payload, key, detectedFacts = []) {
   const priorities = new Set(["high", "medium", "low"]);
+  const facts = new Map(detectedFacts.map((fact) => [fact.factId, fact]));
   const actions = Array.isArray(payload.actions) ? payload.actions.slice(0, 5) : [];
-  return {
-    summary: String(payload.summary || "已根据当前经营事实完成行动排序。"),
-    actions: actions
-      .filter((action) => action && typeof action === "object")
-      .map((action, index) => ({
+  const normalizedActions = actions
+    .flatMap((action, index) => {
+      if (!action || typeof action !== "object") return [];
+      const fact = facts.get(String(action.factId || ""));
+      if (!fact) return [];
+      return [{
         id: `${key.slice(0, 8)}-${index}`,
         priority: priorities.has(action.priority) ? action.priority : "medium",
-        customer: String(action.customer || "经营对象"),
-        category: String(action.category || "经营提醒"),
-        fact: String(action.fact || ""),
+        customer: String(fact.customer || "经营对象"),
+        category: String(fact.category || "经营提醒"),
+        fact: String(fact.fact || ""),
         actionType: String(action.actionType || "跟进确认"),
         rationale: String(action.rationale || "确认事实并安排下一步动作。"),
-        metricIds: Array.isArray(action.metricIds) ? action.metricIds.map(String) : [],
+        metricIds: Array.isArray(fact.metricIds) ? fact.metricIds.map(String) : [],
         confidence: Math.max(0, Math.min(1, Number(action.confidence) || 0)),
-      }))
-      .filter((action) => action.fact),
+      }];
+    })
+    .filter((action) => action.fact);
+  return {
+    summary: normalizedActions.length
+      ? `Agent 已基于 ${normalizedActions.length} 条 EKP 数据事实完成行动排序。`
+      : "当前没有足够的 EKP 数据事实生成行动建议。",
+    actions: normalizedActions,
   };
 }
 
@@ -85,6 +93,13 @@ export async function generateActions(snapshot, catalog, { force = false } = {})
   const metricContext = catalog
     .filter((metric) => snapshot.metrics[metric.id] !== undefined)
     .map((metric) => ({ id: metric.id, name: metric.name, value: snapshot.metrics[metric.id], unit: metric.unit }));
+  const detectedFacts = (snapshot.anomalies || []).map((fact, index) => ({
+    factId: `fact-${index + 1}`,
+    customer: fact.customer,
+    category: fact.category,
+    fact: fact.fact,
+    metricIds: fact.metricIds,
+  }));
 
   try {
     const response = await createDeepSeekClient().chat.completions.create({
@@ -95,20 +110,21 @@ export async function generateActions(snapshot, catalog, { force = false } = {})
           content: [
             "你是华美食品销售行动 Agent。把经营数据转成今天可执行的动作类型。",
             "最高约束：只呈现输入中明确存在的客观事实，不推断真因，不评价任何员工或客户，不虚构数字。",
+            "每条行动必须引用 detectedFacts 中存在的 factId；不得改写事实、客户、分类或指标，只能自主决定优先级、动作类型和行动价值。",
             "按时间窗口、金额或客户影响排序。行动类型使用补货提醒、催单跟进、铺市跟进、回款跟进、客户唤醒等短语。",
-            "必须只返回 JSON：{summary:string, actions:Array<{priority:'high'|'medium'|'low',customer:string,category:string,fact:string,actionType:string,rationale:string,metricIds:string[],confidence:number}>}。",
+            "必须只返回 JSON：{actions:Array<{factId:string,priority:'high'|'medium'|'low',actionType:string,rationale:string,confidence:number}>}。",
           ].join("\n"),
         },
         {
           role: "user",
-          content: JSON.stringify({ identity: snapshot.identity, asOf: snapshot.asOf, metrics: metricContext, detectedFacts: snapshot.anomalies }),
+          content: JSON.stringify({ identity: snapshot.identity, asOf: snapshot.asOf, metrics: metricContext, detectedFacts }),
         },
       ],
       response_format: { type: "json_object" },
       thinking: { type: "disabled" },
       max_tokens: 2200,
     });
-    const normalized = normalizeActions(parseJson(response.choices[0]?.message?.content), key);
+    const normalized = normalizeActions(parseJson(response.choices[0]?.message?.content), key, detectedFacts);
     const value = {
       state: "ready",
       ...normalized,

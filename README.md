@@ -29,32 +29,46 @@ npm start
 
 ## 数据 API 对接
 
-默认连接 `http://183.63.194.18:8098`，以 `POST /open-api/query` 查询只读视图。可在 `.env.local` 调整：
+适配器按照《EKP 数据开放 API｜中文接入文档》接入固定只读资源：
+
+- `GET /open-api/v1/sales-deliveries`
+- `GET /open-api/v1/customer-employees`
+- `GET /open-api/v1/sales-targets`
+
+所有请求通过服务端 `X-API-Key` 认证，使用 `page`、`size` 和文档列出的 lowerCamelCase 查询参数；不会发送 SQL、表名或任意字段表达式。复制配置模板后，在 `.env.local` 填写：
 
 ```dotenv
 DATA_API_BASE_URL=http://183.63.194.18:8098
-DATA_API_QUERY_PATH=/open-api/query
-DATA_API_TOKEN=
-DATA_API_MODE=auto
+DATA_API_PREFIX=/open-api/v1
+DATA_API_TOKEN=ekp_<clientCode>.<secret>
+DATA_API_MODE=live
+DATA_API_EMPLOYEE_CODE=E001
+
+# 用于验证有历史数据的月份；留空表示当前月份
+DATA_API_PERIOD=2026-08
+
+# 必须按 /v3/api-docs 中销售出库的实际金额字段填写
+DATA_API_SALES_AMOUNT_FIELD=amount
+DATA_API_AMOUNT_DIVISOR=10000
+
+# 季节品业务口径
+DATA_API_SEASONAL_PRODUCT_LINE=月饼
+DATA_API_SEASONAL_CATEGORY=
+DATA_API_SEASONAL_DEADLINE=2026-08-31
+
+# 可选；配置后才计算新品客户覆盖率
+DATA_API_NEW_PRODUCT_MATCH=新品
 ```
 
-请求契约：
+`DATA_API_EMPLOYEE_CODE` 必须是 EKP 中存在的真实员工工号。当前界面的身份切换仍是 POC 模拟器；该环境变量会把 live 测试限制在一个真实员工范围内，避免无意读取全量数据。
 
-```json
-{
-  "view": "demo_seasonal_sprint",
-  "fields": ["attainment_rate", "target_amount"],
-  "filters": {
-    "employeeId": "E10086",
-    "role": "customer-manager",
-    "orgCode": "CN-EAST-SH"
-  },
-  "limit": 200,
-  "readOnly": true
-}
+金额字段必须以 OpenAPI JSON 为准：
+
+```bash
+curl -sS http://183.63.194.18:8098/v3/api-docs -o ekp-openapi.json
 ```
 
-适配器兼容数组及常见的 `data`、`rows`、`records`、`result.records` 返回包裹。指标与视图字段映射位于 `data/metric-catalog.json`。由于当前执行网络无法访问所给 OpenAPI 文档，`DATA_API_QUERY_PATH` 和真实视图/字段需要在能访问该服务的网络中按文档校准。
+适配器读取统一响应外壳中的 `data.rows`，自动普通分页，并在金额汇总时按 decimal 两位小数累加。季节品目标来自 `sales-targets.targetAmount`；已达、出库额、同比、趋势和品类结构来自 `sales-deliveries`；责任客户来自 `customer-employees`。EKP 当前未开放回款和库存数据，因此 live 模式不会伪造回款率或库存周转天数，对应卡片显示 `—`。
 
 `DATA_API_MODE`：
 
@@ -95,3 +109,24 @@ ADMIN_API_TOKEN=请使用高强度随机值
 npm test
 npm run build
 ```
+
+验证真实数据库链路时先启动服务：
+
+```bash
+npm start
+```
+
+另开一个终端，先测试 Data API，不触发 DeepSeek：
+
+```bash
+curl -sS http://127.0.0.1:8787/api/health
+curl -sS 'http://127.0.0.1:8787/api/data-check?role=customer-manager'
+```
+
+成功标准：`dataApiMode` 为 `live`、`dataApiContract` 为 `ekp-v1`，并且 `data-check` 返回 `"ok":true`、`source.mode` 为 `live`、`rowCounts` 至少一类大于 0。确认数据后测试 Agent：
+
+```bash
+curl -sS -X POST 'http://127.0.0.1:8787/api/agent/refresh?role=customer-manager'
+```
+
+返回中的 `agent.state` 为 `ready` 且 `agent.actions` 非空，表示 DeepSeek 已基于本次 EKP 聚合指标和检测事实生成建议。若数据链路成功但金额类指标为 `—`，请按 `/v3/api-docs` 修正 `DATA_API_SALES_AMOUNT_FIELD`。

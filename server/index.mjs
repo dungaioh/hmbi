@@ -46,6 +46,8 @@ async function composeBoard(role, forceAgent = false) {
     source,
     metrics: snapshot.metrics,
     trend: snapshot.trend,
+    trendLabels: snapshot.trendLabels,
+    categoryMix: snapshot.categoryMix,
     cards: cards.filter((card) => card.enabled).sort((a, b) => a.order - b.order),
     catalog,
     agent,
@@ -56,9 +58,29 @@ app.get("/api/health", (_request, response) => {
   response.json({
     ok: true,
     dataApiMode: process.env.DATA_API_MODE || "auto",
+    dataApiContract: "ekp-v1",
+    dataApiEmployeeConfigured: Boolean(process.env.DATA_API_EMPLOYEE_CODE),
     deepSeekConfigured: Boolean(process.env.DEEPSEEK_API_KEY),
   });
 });
+
+app.get("/api/data-check", asyncRoute(async (request, response) => {
+  const role = resolveRole(request);
+  const identity = getDemoIdentity(role);
+  const { snapshot, source } = await getBoardData({ role, identity });
+  response.json({
+    ok: source.mode === "live" && source.state === "ready",
+    identity: snapshot.identity,
+    period: snapshot.period,
+    asOf: snapshot.asOf,
+    source,
+    metrics: snapshot.metrics,
+    availableMetricIds: snapshot.availableMetricIds || Object.keys(snapshot.metrics),
+    unavailableMetricIds: snapshot.unavailableMetricIds || [],
+    trendPointCount: snapshot.trend?.length || 0,
+    factCount: snapshot.anomalies?.length || 0,
+  });
+}));
 
 app.get("/api/board", asyncRoute(async (request, response) => {
   response.json(await composeBoard(resolveRole(request), false));

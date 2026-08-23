@@ -51,9 +51,19 @@ export interface BoardResponse {
     state: "ready" | "fallback";
     message: string;
     detail?: string;
+    diagnostics?: {
+      rowCounts: {
+        salesDeliveries: number;
+        customerEmployees: number;
+        salesTargets: number;
+      };
+      amountField: string | null;
+    };
   };
   metrics: Record<string, number | string>;
   trend: number[];
+  trendLabels?: string[];
+  categoryMix?: Array<{ name: string; value: number; share: number }>;
   cards: CardConfig[];
   catalog: MetricDefinition[];
   agent: {
