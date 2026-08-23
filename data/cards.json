@@ -1,0 +1,29 @@
+[
+  {
+    "id": "seasonal-sprint",
+    "title": "中秋月饼档",
+    "eyebrow": "季节品冲刺 · 考核看达成",
+    "type": "sprint",
+    "metricIds": ["seasonal_attainment", "seasonal_target", "seasonal_achieved", "seasonal_gap", "days_remaining", "daily_required"],
+    "enabled": true,
+    "order": 10
+  },
+  {
+    "id": "daily-health",
+    "title": "日常烘焙",
+    "eyebrow": "日消品健康 · 考核看客户数 + 铺市",
+    "type": "health",
+    "metricIds": ["active_customers", "total_customers", "distribution_rate", "new_distribution_rate"],
+    "enabled": true,
+    "order": 20
+  },
+  {
+    "id": "sales-overview",
+    "title": "经营关键指标",
+    "eyebrow": "经营全景 · T-1 数据",
+    "type": "kpi-grid",
+    "metricIds": ["sales_amount", "sales_yoy", "collection_rate", "inventory_turnover"],
+    "enabled": true,
+    "order": 30
+  }
+]

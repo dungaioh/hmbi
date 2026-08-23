@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>华美 · 销售行动屏（手机第一屏）</title>
+<style>
+:root{--orange:#FF6C00;--orange-d:#E85F00;--purple:#3C0082;--purple2:#5A2AA6;--pink:#FFD2F0;--pinkd:#E86FB0;--yellow:#F5B800;
+--ink:#2A1846;--ink2:#6B5B86;--mut:#9D92B3;--line:#EDE8F5;--bg:#F0ECF7;--card:#fff;}
+*{box-sizing:border-box;margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;}
+body{background:linear-gradient(160deg,#efe9f8,#e5ddf2);min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:26px 12px;gap:14px;}
+.cap{color:var(--ink2);font-size:13px;max-width:390px;text-align:center;line-height:1.6;}
+.cap b{color:var(--purple);}
+.phone{width:390px;background:#fff;border-radius:38px;box-shadow:0 22px 60px rgba(60,0,130,.28),0 0 0 10px #1a1030;overflow:hidden;}
+.notch{height:30px;background:var(--purple);position:relative;}
+.notch::after{content:"";position:absolute;left:50%;top:8px;transform:translateX(-50%);width:120px;height:22px;background:#1a1030;border-radius:0 0 16px 16px;}
+/* header */
+.hd{background:linear-gradient(120deg,var(--purple),#4a1596);color:#fff;padding:12px 18px 16px;}
+.hrow{display:flex;align-items:center;gap:9px;}
+.mk{width:30px;height:31px;border-radius:8px;background:var(--orange);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:13px;line-height:1;}
+.htxt{font-size:16px;font-weight:800;}
+.hsub{font-size:11px;color:#cbb8ee;margin-top:1px;}
+.who{margin-left:auto;text-align:right;font-size:11px;color:#e7ddf7;}
+.who b{display:block;font-size:12.5px;color:#fff;}
+/* body */
+.bd{padding:14px 14px 8px;background:var(--bg);max-height:620px;overflow-y:auto;}
+.sec{font-size:12px;font-weight:700;color:var(--ink2);margin:4px 2px 8px;display:flex;align-items:center;gap:6px;}
+.sec .d{width:6px;height:6px;border-radius:50%;background:var(--orange);}
+/* 冲刺卡 */
+.sprint{background:linear-gradient(135deg,#FF7A15,#E85F00);border-radius:18px;padding:15px 16px;color:#fff;box-shadow:0 8px 20px rgba(232,95,0,.28);margin-bottom:14px;}
+.sprint .t{font-size:14px;font-weight:800;display:flex;align-items:center;justify-content:space-between;}
+.sprint .badge{background:rgba(255,255,255,.22);font-size:10.5px;padding:2px 8px;border-radius:20px;font-weight:700;}
+.sprint .big{font-size:30px;font-weight:800;margin:8px 0 2px;}
+.sprint .big small{font-size:13px;font-weight:600;opacity:.9;}
+.pbar{height:8px;background:rgba(255,255,255,.28);border-radius:5px;overflow:hidden;margin:8px 0 9px;}
+.pbar>i{display:block;height:100%;background:#fff;border-radius:5px;}
+.srow{display:flex;justify-content:space-between;font-size:11.5px;}
+.srow b{font-size:13px;}
+/* 健康卡 */
+.health{background:#fff;border:1px solid var(--line);border-radius:18px;padding:13px 15px;margin-bottom:16px;box-shadow:0 6px 16px rgba(60,0,130,.06);}
+.health .t{font-size:13px;font-weight:800;color:var(--purple);display:flex;align-items:center;justify-content:space-between;}
+.health .t .badge{background:#f0eafb;color:var(--purple);font-size:10px;padding:2px 8px;border-radius:20px;}
+.hstats{display:flex;gap:10px;margin-top:11px;}
+.hstat{flex:1;text-align:center;background:#faf8fe;border-radius:12px;padding:9px 4px;}
+.hstat .v{font-size:19px;font-weight:800;color:var(--ink);}
+.hstat .v i{font-style:normal;font-size:12px;color:var(--mut);}
+.hstat .k{font-size:10.5px;color:var(--ink2);margin-top:2px;}
+/* 行动清单 */
+.act{background:#fff;border:1px solid var(--line);border-radius:15px;padding:12px 13px;margin-bottom:9px;box-shadow:0 4px 12px rgba(60,0,130,.05);display:flex;gap:11px;}
+.pri{width:5px;border-radius:4px;flex:none;}
+.p1{background:var(--orange);} .p2{background:var(--pinkd);} .p3{background:var(--yellow);}
+.acol{flex:1;min-width:0;}
+.atop{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:3px;}
+.cust{font-size:14px;font-weight:800;color:var(--ink);}
+.tag{font-size:9.5px;font-weight:700;padding:1.5px 7px;border-radius:5px;white-space:nowrap;}
+.tg-s{background:#fff1e6;color:var(--orange-d);}
+.tg-p{background:#fbeaf3;color:var(--pinkd);}
+.tg-y{background:#fdf4de;color:#a9781a;}
+.tg-r{background:#fbe9ea;color:#cf4657;}
+.fact{font-size:12px;color:var(--ink2);line-height:1.5;}
+.sug{margin-top:7px;display:inline-flex;align-items:center;gap:5px;background:var(--purple);color:#fff;font-size:11.5px;font-weight:700;padding:5px 11px;border-radius:20px;}
+/* tabbar */
+.tab{display:flex;background:#fff;border-top:1px solid var(--line);}
+.tab div{flex:1;text-align:center;padding:10px 0 12px;font-size:11px;color:var(--mut);}
+.tab div.on{color:var(--orange);font-weight:800;}
+.tab div .ic{font-size:17px;display:block;margin-bottom:2px;}
+.foot{font-size:10px;color:var(--mut);text-align:center;padding:8px 14px 2px;line-height:1.7;}
+</style>
+</head>
+<body>
+<div class="cap">华美 <b>销售行动屏</b> · 手机第一屏原型　|　只放能驱动动作、直接挂钩考核的东西；经营全景在第二个 tab。数据为演示模拟值。</div>
+<div class="phone">
+  <div class="notch"></div>
+  <div class="hd">
+    <div class="hrow">
+      <div class="mk">华</div>
+      <div><div class="htxt">今日行动</div><div class="hsub">销售行动屏 · 7月26日 周日</div></div>
+      <div class="who">客户经理<b>张伟</b>华东-上海</div>
+    </div>
+  </div>
+  <div class="bd">
+    <!-- 季节品冲刺 -->
+    <div class="sec"><span class="d"></span>季节品冲刺 · 考核看达成</div>
+    <div class="sprint">
+      <div class="t"><span>中秋月饼档</span><span class="badge">距中秋 9 天</span></div>
+      <div class="big">62%<small> 目标达成</small></div>
+      <div class="pbar"><i style="width:62%"></i></div>
+      <div class="srow"><span>目标 280万 · 已达 173万</span><span>缺口 <b>107万</b></span></div>
+      <div class="srow" style="margin-top:4px;opacity:.92;"><span>剩 9 天</span><span>需日均 <b>12万</b> 才达标</span></div>
+    </div>
+    <!-- 日消品健康 -->
+    <div class="sec"><span class="d" style="background:var(--purple)"></span>日消品健康 · 考核看客户数+铺市</div>
+    <div class="health">
+      <div class="t"><span>日常烘焙</span><span class="badge">环比 ▲ 上升</span></div>
+      <div class="hstats">
+        <div class="hstat"><div class="v">6<i>/8</i></div><div class="k">活跃客户</div></div>
+        <div class="hstat"><div class="v">75<i>%</i></div><div class="k">铺市率</div></div>
+        <div class="hstat"><div class="v">3<i>/8</i></div><div class="k">新品铺市</div></div>
+      </div>
+    </div>
+    <!-- 行动清单 -->
+    <div class="sec"><span class="d" style="background:var(--pinkd)"></span>今日行动清单 · 按优先级</div>
+
+    <div class="act"><div class="pri p1"></div><div class="acol">
+      <div class="atop"><span class="cust">华润万家·中秋档</span><span class="tag tg-s">季节·达成</span></div>
+      <div class="fact">月饼订量 40万，仅达客户目标 40%；距中秋 9 天。</div>
+      <span class="sug">建议动作：催单压货 ›</span>
+    </div></div>
+
+    <div class="act"><div class="pri p1"></div><div class="acol">
+      <div class="atop"><span class="cust">城市便利·浦东</span><span class="tag tg-r">断货风险</span></div>
+      <div class="fact">面包类客户库存可支撑 <b>2 天</b>，低于安全线。</div>
+      <span class="sug">建议动作：补货提醒 ›</span>
+    </div></div>
+
+    <div class="act"><div class="pri p2"></div><div class="acol">
+      <div class="atop"><span class="cust">邻里生鲜·杨浦</span><span class="tag tg-p">日消·活跃</span></div>
+      <div class="fact">连续 3 周无下单（呆滞），此前月均 4 单。</div>
+      <span class="sug">建议动作：唤醒跟进 ›</span>
+    </div></div>
+
+    <div class="act"><div class="pri p2"></div><div class="acol">
+      <div class="atop"><span class="cust">优选超市·静安</span><span class="tag tg-p">日消·铺市</span></div>
+      <div class="fact">3 款重点新品应铺未铺，同区客户已铺开。</div>
+      <span class="sug">建议动作：铺市跟进 ›</span>
+    </div></div>
+
+    <div class="act"><div class="pri p3"></div><div class="acol">
+      <div class="atop"><span class="cust">万家·闵行</span><span class="tag tg-y">回款</span></div>
+      <div class="fact">应收逾期 15 天，金额 ¥8.6 万。</div>
+      <span class="sug">建议动作：催款跟进 ›</span>
+    </div></div>
+
+    <div class="foot">AI 只呈现事实与建议动作类型，具体真因与做法由你判断决定。<br>数据来源：SQL Server 分析库 DWS · 截至 T-1</div>
+  </div>
+  <div class="tab">
+    <div class="on"><span class="ic">◎</span>行动</div>
+    <div><span class="ic">▤</span>经营全景</div>
+    <div><span class="ic">☰</span>我的</div>
+  </div>
+</div>
+<div class="cap" style="max-width:390px;">底部「经营全景」tab＝二屏，放出库趋势 / 客户TOP / 品类结构 / 库存周转等标准描述指标，供深看。</div>
+</body>
+</html>

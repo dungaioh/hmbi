@@ -1,0 +1,30 @@
+{
+  "name": "hmbi-sales-action-board",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c magenta,cyan \"node --watch server/index.mjs\" \"vite\"",
+    "build": "tsc --noEmit && vite build",
+    "start": "node server/index.mjs",
+    "test": "node --test server/**/*.test.mjs"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "echarts": "^6.0.0",
+    "express": "^5.1.0",
+    "lucide-react": "^0.468.0",
+    "openai": "^6.3.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.16",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.4",
+    "concurrently": "^9.2.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.9"
+  }
+}
