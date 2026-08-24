@@ -4,6 +4,10 @@ const DEFAULT_API_PREFIX = "/open-api/v1";
 const DEFAULT_PAGE_SIZE = 500;
 const DEFAULT_MAX_PAGES = 40;
 const DEFAULT_TIMEOUT_MS = 15_000;
+const DEFAULT_MAX_RETRIES = 4;
+const DEFAULT_RETRY_BASE_DELAY_MS = 1_000;
+const DEFAULT_CACHE_TTL_MS = 60_000;
+const MAX_RETRY_DELAY_MS = 30_000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const ALL_METRIC_IDS = [
   "seasonal_attainment",
@@ -34,9 +38,31 @@ const AMOUNT_FIELD_CANDIDATES = [
   "taxAmount",
 ];
 
-function exposedError(message, { status = 502, detail, code, traceId } = {}) {
-  return Object.assign(new Error(message), { status, expose: true, detail, code, traceId });
+function exposedError(message, { status = 502, detail, code, traceId, retryAfterMs } = {}) {
+  return Object.assign(new Error(message), { status, expose: true, detail, code, traceId, retryAfterMs });
 }
+
+export function createAsyncTtlCache() {
+  const entries = new Map();
+  return async function loadCached(key, { ttlMs, loader, now = Date.now }) {
+    const entry = entries.get(key);
+    if (entry?.pending) return entry.pending;
+    if (entry && Number(ttlMs) > 0 && now() - entry.createdAt < Number(ttlMs)) return entry.value;
+
+    const pending = Promise.resolve().then(loader);
+    entries.set(key, { pending });
+    try {
+      const value = await pending;
+      entries.set(key, { value, createdAt: now() });
+      return value;
+    } catch (error) {
+      if (entries.get(key)?.pending === pending) entries.delete(key);
+      throw error;
+    }
+  };
+}
+
+const loadCachedLiveSnapshot = createAsyncTtlCache();
 
 export function extractRows(payload) {
   if (Array.isArray(payload)) return payload;
@@ -80,13 +106,31 @@ async function parseResponse(response, resource) {
     const upstreamCode = payload?.code || `HTTP_${response.status}`;
     const traceId = payload?.traceId;
     const upstreamMessage = payload?.message || response.statusText || "请求失败";
+    const rateLimited = response.status === 429 || upstreamCode === "API_RATE_LIMIT_EXCEEDED";
+    const retryAfter = response.headers.get("retry-after");
+    const retryAfterSeconds = Number(retryAfter);
+    const retryAfterDate = retryAfter && !Number.isFinite(retryAfterSeconds) ? Date.parse(retryAfter) : Number.NaN;
+    const retryAfterMs = Number.isFinite(retryAfterSeconds)
+      ? Math.max(0, retryAfterSeconds * 1_000)
+      : Number.isFinite(retryAfterDate) ? Math.max(0, retryAfterDate - Date.now()) : undefined;
     throw exposedError(`EKP ${resource} 请求失败：${upstreamCode}`, {
+      status: rateLimited ? 429 : 502,
       detail: `${upstreamMessage}${traceId ? ` · traceId=${traceId}` : ""}`,
       code: upstreamCode,
       traceId,
+      retryAfterMs,
     });
   }
   return payload;
+}
+
+function numericOption(value, fallback, { min = 0, max = Number.POSITIVE_INFINITY } = {}) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(min, Math.min(max, parsed)) : fallback;
+}
+
+function defaultSleep(delayMs) {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
 export async function fetchAllRows({
@@ -98,7 +142,10 @@ export async function fetchAllRows({
   params = {},
   pageSize = DEFAULT_PAGE_SIZE,
   maxPages = DEFAULT_MAX_PAGES,
+  maxRetries = DEFAULT_MAX_RETRIES,
+  retryBaseDelayMs = DEFAULT_RETRY_BASE_DELAY_MS,
   fetchImpl = fetch,
+  sleepImpl = defaultSleep,
   stopAfterPage,
 }) {
   if (!token) {
@@ -107,6 +154,8 @@ export async function fetchAllRows({
   const rows = [];
   const safeSize = Math.max(1, Math.min(500, Number(pageSize) || DEFAULT_PAGE_SIZE));
   const safeMaxPages = Math.max(1, Number(maxPages) || DEFAULT_MAX_PAGES);
+  const safeMaxRetries = numericOption(maxRetries, DEFAULT_MAX_RETRIES, { min: 0, max: 10 });
+  const safeRetryBaseDelayMs = numericOption(retryBaseDelayMs, DEFAULT_RETRY_BASE_DELAY_MS, { min: 0, max: MAX_RETRY_DELAY_MS });
 
   for (let page = 1; page <= safeMaxPages; page += 1) {
     const prefix = `/${String(apiPrefix).replace(/^\/+|\/+$/g, "")}`;
@@ -116,29 +165,42 @@ export async function fetchAllRows({
       if (value !== undefined && value !== null && value !== "") url.searchParams.set(key, String(value));
     }
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     let payload;
-    try {
-      const response = await fetchImpl(url, {
-        method: "GET",
-        headers: {
-          accept: "application/json",
-          "X-API-Key": token,
-        },
-        signal: controller.signal,
-      });
-      payload = await parseResponse(response, resource);
-    } catch (error) {
-      if (error?.expose) throw error;
-      if (error?.name === "AbortError") {
+    for (let attempt = 0; attempt <= safeMaxRetries; attempt += 1) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      let requestError;
+      try {
+        const response = await fetchImpl(url, {
+          method: "GET",
+          headers: {
+            accept: "application/json",
+            "X-API-Key": token,
+          },
+          signal: controller.signal,
+        });
+        payload = await parseResponse(response, resource);
+      } catch (error) {
+        requestError = error;
+      } finally {
+        clearTimeout(timeout);
+      }
+
+      if (!requestError) break;
+      const rateLimited = requestError?.code === "API_RATE_LIMIT_EXCEEDED" || requestError?.status === 429;
+      if (rateLimited && attempt < safeMaxRetries) {
+        const exponentialDelay = safeRetryBaseDelayMs * (2 ** attempt);
+        const delayMs = Math.min(MAX_RETRY_DELAY_MS, Math.max(exponentialDelay, Number(requestError.retryAfterMs) || 0));
+        await sleepImpl(delayMs);
+        continue;
+      }
+      if (requestError?.expose) throw requestError;
+      if (requestError?.name === "AbortError") {
         throw exposedError(`EKP ${resource} 请求超时`, { detail: `超过 ${timeoutMs}ms` });
       }
       throw exposedError(`无法连接 EKP ${resource}`, {
-        detail: error instanceof Error ? error.message : "网络错误",
+        detail: requestError instanceof Error ? requestError.message : "网络错误",
       });
-    } finally {
-      clearTimeout(timeout);
     }
 
     const pageRows = extractRows(payload);
@@ -183,11 +245,14 @@ export async function fetchScopedDeliveries({
   timeoutMs = DEFAULT_TIMEOUT_MS,
   pageSize = DEFAULT_PAGE_SIZE,
   maxPages = DEFAULT_MAX_PAGES,
+  maxRetries = DEFAULT_MAX_RETRIES,
+  retryBaseDelayMs = DEFAULT_RETRY_BASE_DELAY_MS,
   employeeCode,
   relationshipRows = [],
   oldestRequiredPeriod,
-  concurrency = 3,
+  concurrency = 1,
   fetchImpl = fetch,
+  sleepImpl = defaultSleep,
 }) {
   const customerCodes = uniqueCustomerCodes(relationshipRows);
   const common = {
@@ -197,8 +262,11 @@ export async function fetchScopedDeliveries({
     timeoutMs,
     pageSize,
     maxPages,
+    maxRetries,
+    retryBaseDelayMs,
     resource: "sales-deliveries",
     fetchImpl,
+    sleepImpl,
     stopAfterPage: (pageRows) => {
       const datedRows = pageRows.map((row) => monthKey(row?.billDate)).filter(Boolean);
       return datedRows.length > 0 && datedRows.every((key) => key < oldestRequiredPeriod);
@@ -215,7 +283,7 @@ export async function fetchScopedDeliveries({
 
   const results = new Array(customerCodes.length);
   let nextIndex = 0;
-  const safeConcurrency = Math.max(1, Math.min(customerCodes.length, Number(concurrency) || 3));
+  const safeConcurrency = Math.max(1, Math.min(customerCodes.length, Number(concurrency) || 1));
   async function worker() {
     while (nextIndex < customerCodes.length) {
       const index = nextIndex;
@@ -482,7 +550,10 @@ function dataConfig(identity, now = new Date()) {
     timeoutMs: Number(process.env.DATA_API_TIMEOUT_MS || DEFAULT_TIMEOUT_MS),
     maxPages: Number(process.env.DATA_API_MAX_PAGES || DEFAULT_MAX_PAGES),
     pageSize: Number(process.env.DATA_API_PAGE_SIZE || DEFAULT_PAGE_SIZE),
-    deliveryConcurrency: Number(process.env.DATA_API_DELIVERY_CONCURRENCY || 3),
+    maxRetries: Number(process.env.DATA_API_MAX_RETRIES ?? DEFAULT_MAX_RETRIES),
+    retryBaseDelayMs: Number(process.env.DATA_API_RETRY_BASE_MS ?? DEFAULT_RETRY_BASE_DELAY_MS),
+    cacheTtlMs: Number(process.env.DATA_API_CACHE_TTL_MS ?? DEFAULT_CACHE_TTL_MS),
+    deliveryConcurrency: Number(process.env.DATA_API_DELIVERY_CONCURRENCY || 1),
     employeeCode,
     period: validPeriod(process.env.DATA_API_PERIOD, now),
     amountField: String(process.env.DATA_API_SALES_AMOUNT_FIELD || "").trim(),
@@ -494,9 +565,7 @@ function dataConfig(identity, now = new Date()) {
   };
 }
 
-async function fetchLiveSnapshot({ identity }) {
-  const now = new Date();
-  const config = dataConfig(identity, now);
+async function fetchLiveSnapshot({ identity, config, now = new Date() }) {
   const common = {
     baseUrl: config.baseUrl,
     apiPrefix: config.apiPrefix,
@@ -504,27 +573,27 @@ async function fetchLiveSnapshot({ identity }) {
     timeoutMs: config.timeoutMs,
     pageSize: config.pageSize,
     maxPages: config.maxPages,
+    maxRetries: config.maxRetries,
+    retryBaseDelayMs: config.retryBaseDelayMs,
   };
   const oldestRequiredPeriod = previousYearPeriod(config.period);
 
-  const [relationshipRows, targetRows] = await Promise.all([
-    fetchAllRows({
-      ...common,
-      resource: "customer-employees",
-      params: { employeeCode: config.employeeCode, sortBy: "customerCode", direction: "asc" },
-    }),
-    fetchAllRows({
-      ...common,
-      resource: "sales-targets",
-      params: {
-        employeeCode: config.employeeCode,
-        productLineContains: config.seasonalProductLine,
-        categoryNameContains: config.seasonalCategory,
-        sortBy: "date",
-        direction: "desc",
-      },
-    }),
-  ]);
+  const relationshipRows = await fetchAllRows({
+    ...common,
+    resource: "customer-employees",
+    params: { employeeCode: config.employeeCode, sortBy: "customerCode", direction: "asc" },
+  });
+  const targetRows = await fetchAllRows({
+    ...common,
+    resource: "sales-targets",
+    params: {
+      employeeCode: config.employeeCode,
+      productLineContains: config.seasonalProductLine,
+      categoryNameContains: config.seasonalCategory,
+      sortBy: "date",
+      direction: "desc",
+    },
+  });
   const deliveryResult = await fetchScopedDeliveries({
     ...common,
     employeeCode: config.employeeCode,
@@ -546,6 +615,22 @@ async function fetchLiveSnapshot({ identity }) {
   return snapshot;
 }
 
+function snapshotCacheKey(identity, config) {
+  return JSON.stringify({
+    role: identity.role,
+    identityId: identity.id,
+    baseUrl: config.baseUrl,
+    apiPrefix: config.apiPrefix,
+    employeeCode: config.employeeCode,
+    period: config.period,
+    amountField: config.amountField,
+    seasonalProductLine: config.seasonalProductLine,
+    seasonalCategory: config.seasonalCategory,
+    seasonalDeadline: config.seasonalDeadline,
+    newProductMatch: config.newProductMatch,
+  });
+}
+
 export async function getBoardData({ role, identity }) {
   const mode = process.env.DATA_API_MODE || "auto";
   if (mode === "demo") {
@@ -553,7 +638,12 @@ export async function getBoardData({ role, identity }) {
     return { snapshot, source: { mode: "demo", state: "ready", message: "演示视图" } };
   }
   try {
-    const snapshot = await fetchLiveSnapshot({ identity });
+    const now = new Date();
+    const config = dataConfig(identity, now);
+    const snapshot = await loadCachedLiveSnapshot(snapshotCacheKey(identity, config), {
+      ttlMs: numericOption(config.cacheTtlMs, DEFAULT_CACHE_TTL_MS, { min: 0 }),
+      loader: () => fetchLiveSnapshot({ identity, config, now }),
+    });
     const counts = snapshot.diagnostics.rowCounts;
     const missing = snapshot.unavailableMetricIds.length
       ? `；未开放/未配置指标：${snapshot.unavailableMetricIds.join(", ")}`

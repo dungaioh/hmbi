@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildSnapshotFromResources,
+  createAsyncTtlCache,
   extractRows,
   fetchAllRows,
   fetchScopedDeliveries,
@@ -50,6 +51,61 @@ test("fetchAllRows follows EKP GET, X-API-Key and page query contract", async ()
   assert.equal(new URL(requests[0].url).pathname, "/open-api/v1/sales-targets");
   assert.equal(new URL(requests[0].url).searchParams.get("employeeCode"), "E001");
   assert.equal(new URL(requests[1].url).searchParams.get("page"), "2");
+});
+
+test("fetchAllRows retries a transient EKP API_RATE_LIMIT_EXCEEDED response", async () => {
+  let requestCount = 0;
+  const retryDelays = [];
+  const fetchImpl = async () => {
+    requestCount += 1;
+    if (requestCount === 1) {
+      return new Response(JSON.stringify({
+        code: "API_RATE_LIMIT_EXCEEDED",
+        message: "Too many requests",
+        traceId: "trace-rate-limit",
+      }), { status: 429, headers: { "content-type": "application/json", "retry-after": "0" } });
+    }
+    return new Response(JSON.stringify({
+      code: "OK",
+      data: { rows: [{ customerCode: "C1" }], page: 1, size: 500, total: 1 },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+
+  const rows = await fetchAllRows({
+    baseUrl: "http://example.test:8098",
+    token: "secret-key",
+    resource: "customer-employees",
+    params: { employeeCode: "E001" },
+    fetchImpl,
+    retryBaseDelayMs: 0,
+    sleepImpl: async (delayMs) => retryDelays.push(delayMs),
+  });
+
+  assert.deepEqual(rows, [{ customerCode: "C1" }]);
+  assert.equal(requestCount, 2);
+  assert.deepEqual(retryDelays, [0]);
+});
+
+test("async TTL cache coalesces concurrent EKP snapshot loads", async () => {
+  const loadCached = createAsyncTtlCache();
+  let loadCount = 0;
+  const loader = async () => {
+    loadCount += 1;
+    await Promise.resolve();
+    return { snapshotId: loadCount };
+  };
+
+  const [first, concurrent] = await Promise.all([
+    loadCached("employee:E001", { ttlMs: 60_000, loader, now: () => 1_000 }),
+    loadCached("employee:E001", { ttlMs: 60_000, loader, now: () => 1_000 }),
+  ]);
+  const cached = await loadCached("employee:E001", { ttlMs: 60_000, loader, now: () => 2_000 });
+  const refreshed = await loadCached("employee:E001", { ttlMs: 60_000, loader, now: () => 62_000 });
+
+  assert.strictEqual(first, concurrent);
+  assert.strictEqual(first, cached);
+  assert.notStrictEqual(first, refreshed);
+  assert.equal(loadCount, 2);
 });
 
 test("fetchScopedDeliveries queries each assigned customer and deduplicates delivery lines", async () => {

@@ -43,7 +43,10 @@ DATA_API_PREFIX=/open-api/v1
 DATA_API_TOKEN=ekp_<clientCode>.<secret>
 DATA_API_MODE=live
 DATA_API_EMPLOYEE_CODE=E001
-DATA_API_DELIVERY_CONCURRENCY=3
+DATA_API_MAX_RETRIES=4
+DATA_API_RETRY_BASE_MS=1000
+DATA_API_CACHE_TTL_MS=60000
+DATA_API_DELIVERY_CONCURRENCY=1
 
 # 用于验证有历史数据的月份；留空表示当前月份
 DATA_API_PERIOD=2026-08
@@ -61,7 +64,9 @@ DATA_API_SEASONAL_DEADLINE=2026-08-31
 DATA_API_NEW_PRODUCT_MATCH=新品
 ```
 
-`DATA_API_EMPLOYEE_CODE` 必须是 EKP 中存在的真实员工工号。适配器先从 `customer-employees` 读取该员工的责任客户，再用文档支持的 `customerCode` 逐户查询 `sales-deliveries`，避免无效的员工字段过滤退化为全量查询。`DATA_API_DELIVERY_CONCURRENCY` 控制并发客户数，默认 3；若 EKP 返回 429，可将它降为 1。
+`DATA_API_EMPLOYEE_CODE` 必须是 EKP 中存在的真实员工工号。适配器先从 `customer-employees` 读取该员工的责任客户，再用文档支持的 `customerCode` 逐户查询 `sales-deliveries`，避免无效的员工字段过滤退化为全量查询。
+
+为避免 `API_RATE_LIMIT_EXCEEDED`，EKP 请求默认串行执行；限流后会优先遵循 `Retry-After`，否则以 1、2、4、8 秒退避，最多重试 4 次。看板、Agent 和 ChatBI 在 60 秒内复用同一份 live 快照，同时发起的相同请求也会合并。若 API Key 仍由其他服务共用并触发限流，可适当提高 `DATA_API_CACHE_TTL_MS`；不建议提高 `DATA_API_DELIVERY_CONCURRENCY`。
 
 金额字段必须以 OpenAPI JSON 为准：
 
