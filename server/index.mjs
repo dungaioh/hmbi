@@ -5,7 +5,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { getCards, getMetricCatalog, createCard, updateCardMetrics } from "./card-store.mjs";
 import { allowedRoles, getDemoIdentity } from "./demo-data.mjs";
-import { getBoardData } from "./data-service.mjs";
+import { getBoardData, probeLiveData } from "./data-service.mjs";
 import { answerDataQuestion, generateActions } from "./agent.mjs";
 import { adminTokenMatches } from "./auth.mjs";
 
@@ -80,6 +80,13 @@ app.get("/api/data-check", asyncRoute(async (request, response) => {
     trendPointCount: snapshot.trend?.length || 0,
     factCount: snapshot.anomalies?.length || 0,
   });
+}));
+
+app.get("/api/data-probe", asyncRoute(async (request, response) => {
+  const role = resolveRole(request);
+  const identity = getDemoIdentity(role);
+  const customerCode = String(request.query.customerCode || "").trim().slice(0, 128);
+  response.json(await probeLiveData({ identity, customerCode }));
 }));
 
 app.get("/api/board", asyncRoute(async (request, response) => {

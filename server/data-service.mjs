@@ -4,10 +4,10 @@ const DEFAULT_API_PREFIX = "/open-api/v1";
 const DEFAULT_PAGE_SIZE = 500;
 const DEFAULT_MAX_PAGES = 40;
 const DEFAULT_TIMEOUT_MS = 15_000;
-const DEFAULT_MAX_RETRIES = 4;
-const DEFAULT_RETRY_BASE_DELAY_MS = 1_000;
+const DEFAULT_MAX_RETRIES = 1;
+const DEFAULT_RETRY_BASE_DELAY_MS = 60_000;
 const DEFAULT_CACHE_TTL_MS = 60_000;
-const MAX_RETRY_DELAY_MS = 30_000;
+const MAX_RETRY_DELAY_MS = 300_000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const ALL_METRIC_IDS = [
   "seasonal_attainment",
@@ -147,6 +147,8 @@ export async function fetchAllRows({
   fetchImpl = fetch,
   sleepImpl = defaultSleep,
   stopAfterPage,
+  onPage,
+  pageLimitMode = "throw",
 }) {
   if (!token) {
     throw exposedError("未配置 EKP API Key，请在 .env.local 设置 DATA_API_TOKEN", { status: 503 });
@@ -206,6 +208,7 @@ export async function fetchAllRows({
     const pageRows = extractRows(payload);
     rows.push(...pageRows);
     const meta = pageMetadata(payload);
+    onPage?.({ page, rows: pageRows, metadata: meta });
 
     if (stopAfterPage?.(pageRows, rows)) break;
     if (meta.hasMore === false) break;
@@ -213,12 +216,41 @@ export async function fetchAllRows({
     if (meta.totalPages !== null && page >= meta.totalPages) break;
     if (pageRows.length < safeSize) break;
     if (page === safeMaxPages) {
+      if (pageLimitMode === "return") break;
       throw exposedError(`EKP ${resource} 超过分页安全上限`, {
         detail: `已读取 ${rows.length} 行；可通过 DATA_API_MAX_PAGES 调整上限`,
       });
     }
   }
   return rows;
+}
+
+function probeSummary(rows, metadata) {
+  const fields = [...new Set(rows.flatMap((row) => Object.keys(row || {})))].sort();
+  return {
+    returnedRows: rows.length,
+    total: metadata.total,
+    totalPages: metadata.totalPages,
+    hasMore: metadata.hasMore,
+    fields,
+    sampleRows: rows.slice(0, 3),
+  };
+}
+
+async function probeResource({ common, resource, params, pageSize = 5 }) {
+  let metadata = { total: null, totalPages: null, hasMore: null };
+  const rows = await fetchAllRows({
+    ...common,
+    resource,
+    params,
+    pageSize,
+    maxPages: 1,
+    pageLimitMode: "return",
+    onPage: (page) => {
+      metadata = page.metadata;
+    },
+  });
+  return { rows, summary: probeSummary(rows, metadata) };
 }
 
 function uniqueCustomerCodes(rows) {
@@ -562,6 +594,70 @@ function dataConfig(identity, now = new Date()) {
     seasonalCategory: String(process.env.DATA_API_SEASONAL_CATEGORY || "").trim(),
     seasonalDeadline: String(process.env.DATA_API_SEASONAL_DEADLINE || "").trim(),
     newProductMatch: String(process.env.DATA_API_NEW_PRODUCT_MATCH || "").trim(),
+  };
+}
+
+export async function probeLiveData({ identity, customerCode = "", fetchImpl = fetch }) {
+  const now = new Date();
+  const config = dataConfig(identity, now);
+  const common = {
+    baseUrl: config.baseUrl,
+    apiPrefix: config.apiPrefix,
+    token: config.token,
+    timeoutMs: config.timeoutMs,
+    maxRetries: config.maxRetries,
+    retryBaseDelayMs: config.retryBaseDelayMs,
+    fetchImpl,
+  };
+
+  const relationships = await probeResource({
+    common,
+    resource: "customer-employees",
+    params: { employeeCode: config.employeeCode, sortBy: "customerCode", direction: "asc" },
+  });
+  const selectedCustomerCode = String(customerCode || relationships.rows[0]?.customerCode || "").trim();
+  const targets = await probeResource({
+    common,
+    resource: "sales-targets",
+    params: { employeeCode: config.employeeCode, sortBy: "date", direction: "desc" },
+  });
+  const deliveries = selectedCustomerCode
+    ? await probeResource({
+      common,
+      resource: "sales-deliveries",
+      params: { customerCode: selectedCustomerCode, isDeleted: 0, sortBy: "billDate", direction: "desc" },
+    })
+    : { rows: [], summary: { skipped: true, reason: "customer-employees 样本中没有 customerCode" } };
+
+  const deliveryDates = deliveries.rows
+    .map((row) => ({ raw: row?.billDate, time: Date.parse(String(row?.billDate || "")) }))
+    .filter((item) => Number.isFinite(item.time));
+  const availableAmountFields = AMOUNT_FIELD_CANDIDATES.filter((field) => deliveries.summary.fields?.includes(field));
+  const deliveryCapacity = Math.max(1, config.pageSize) * Math.max(1, config.maxPages);
+  return {
+    ok: true,
+    mode: "probe",
+    message: "仅取每个资源第一页用于验证 EKP 数据结构；这些样本不能作为完整 BI 指标。",
+    employeeCode: config.employeeCode,
+    selectedCustomerCode: selectedCustomerCode || null,
+    resources: {
+      customerEmployees: relationships.summary,
+      salesTargets: targets.summary,
+      salesDeliveries: deliveries.summary,
+    },
+    diagnostics: {
+      customerFilterMatches: deliveries.rows.length
+        ? deliveries.rows.every((row) => String(row?.customerCode || "").trim() === selectedCustomerCode)
+        : null,
+      billDatePresent: deliveryDates.length,
+      billDateDescending: deliveryDates.length > 1
+        ? deliveryDates.every((item, index) => index === 0 || deliveryDates[index - 1].time >= item.time)
+        : null,
+      availableAmountFields,
+      configuredAmountField: config.amountField || null,
+      deliveryCapacity,
+      deliveryExceedsBoardPageLimit: Number(deliveries.summary.total) > deliveryCapacity,
+    },
   };
 }
 

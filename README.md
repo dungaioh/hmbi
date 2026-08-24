@@ -43,8 +43,8 @@ DATA_API_PREFIX=/open-api/v1
 DATA_API_TOKEN=ekp_<clientCode>.<secret>
 DATA_API_MODE=live
 DATA_API_EMPLOYEE_CODE=E001
-DATA_API_MAX_RETRIES=4
-DATA_API_RETRY_BASE_MS=1000
+DATA_API_MAX_RETRIES=1
+DATA_API_RETRY_BASE_MS=60000
 DATA_API_CACHE_TTL_MS=60000
 DATA_API_DELIVERY_CONCURRENCY=1
 
@@ -66,7 +66,9 @@ DATA_API_NEW_PRODUCT_MATCH=新品
 
 `DATA_API_EMPLOYEE_CODE` 必须是 EKP 中存在的真实员工工号。适配器先从 `customer-employees` 读取该员工的责任客户，再用文档支持的 `customerCode` 逐户查询 `sales-deliveries`，避免无效的员工字段过滤退化为全量查询。
 
-为避免 `API_RATE_LIMIT_EXCEEDED`，EKP 请求默认串行执行；限流后会优先遵循 `Retry-After`，否则以 1、2、4、8 秒退避，最多重试 4 次。看板、Agent 和 ChatBI 在 60 秒内复用同一份 live 快照，同时发起的相同请求也会合并。若 API Key 仍由其他服务共用并触发限流，可适当提高 `DATA_API_CACHE_TTL_MS`；不建议提高 `DATA_API_DELIVERY_CONCURRENCY`。
+为避免 `API_RATE_LIMIT_EXCEEDED`，EKP 请求默认串行执行。文档要求 429 后延迟到下一分钟再试，因此默认等待 60 秒后重试 1 次；若响应带 `Retry-After` 则优先采用该值。看板、Agent 和 ChatBI 在 60 秒内复用同一份 live 快照，同时发起的相同请求也会合并。若 API Key 仍由其他服务共用并触发限流，可适当提高 `DATA_API_CACHE_TTL_MS`；不建议提高 `DATA_API_DELIVERY_CONCURRENCY`。
+
+销售出库普通分页只支持字段精确匹配，没有文档化的日期范围条件。它适合小结果集和抽样，不适合在页面请求中深分页拉取大客户历史数据；正式 BI 应先通过 `/sales-deliveries/changes` 增量同步到持久化数据层，再在本地按月份聚合。
 
 金额字段必须以 OpenAPI JSON 为准：
 
@@ -126,10 +128,30 @@ npm start
 
 ```bash
 curl -sS http://127.0.0.1:8787/api/health
+curl -sS 'http://127.0.0.1:8787/api/data-probe?role=customer-manager'
+```
+
+`data-probe` 最多请求三个资源的第一页，不会深分页，也不会调用 DeepSeek。重点检查：
+
+- `resources.salesDeliveries.fields`：真实出库字段；
+- `diagnostics.customerFilterMatches`：应为 `true`；
+- `diagnostics.billDateDescending`：应为 `true`；
+- `diagnostics.availableAmountFields`：把返回字段写入 `DATA_API_SALES_AMOUNT_FIELD`；
+- `diagnostics.deliveryExceedsBoardPageLimit`：若为 `true`，证明普通分页不适合直接驱动完整 BI。
+
+也可以指定一个已知客户，只读取该客户的 5 行样本：
+
+```bash
+curl -sS 'http://127.0.0.1:8787/api/data-probe?role=customer-manager&customerCode=C001'
+```
+
+只有确认结果总量可控后，再测试完整聚合：
+
+```bash
 curl -sS 'http://127.0.0.1:8787/api/data-check?role=customer-manager'
 ```
 
-成功标准：`dataApiMode` 为 `live`、`dataApiContract` 为 `ekp-v1`，并且 `data-check` 返回 `"ok":true`、`source.mode` 为 `live`、`rowCounts` 至少一类大于 0。`source.diagnostics.deliveryScope` 应为 `customerCode`，`deliveryQueryCount` 应等于去重后的责任客户数。确认数据后测试 Agent：
+`data-check` 成功标准：返回 `"ok":true`、`source.mode` 为 `live`、`rowCounts` 至少一类大于 0，`source.diagnostics.deliveryScope` 为 `customerCode`。确认完整数据后测试 Agent：
 
 ```bash
 curl -sS -X POST 'http://127.0.0.1:8787/api/agent/refresh?role=customer-manager'

@@ -6,6 +6,7 @@ import {
   extractRows,
   fetchAllRows,
   fetchScopedDeliveries,
+  probeLiveData,
 } from "./data-service.mjs";
 
 test("extractRows supports the EKP data.rows response envelope", () => {
@@ -86,6 +87,31 @@ test("fetchAllRows retries a transient EKP API_RATE_LIMIT_EXCEEDED response", as
   assert.deepEqual(retryDelays, [0]);
 });
 
+test("fetchAllRows can return a bounded first page for direct EKP data probing", async () => {
+  const fetchImpl = async () => new Response(JSON.stringify({
+    code: "OK",
+    data: {
+      rows: [{ billLineId: "L1" }, { billLineId: "L2" }],
+      page: 1,
+      size: 2,
+      total: 99_999,
+      totalPages: 50_000,
+    },
+  }), { status: 200, headers: { "content-type": "application/json" } });
+
+  const rows = await fetchAllRows({
+    baseUrl: "http://example.test:8098",
+    token: "secret-key",
+    resource: "sales-deliveries",
+    pageSize: 2,
+    maxPages: 1,
+    pageLimitMode: "return",
+    fetchImpl,
+  });
+
+  assert.deepEqual(rows, [{ billLineId: "L1" }, { billLineId: "L2" }]);
+});
+
 test("async TTL cache coalesces concurrent EKP snapshot loads", async () => {
   const loadCached = createAsyncTtlCache();
   let loadCount = 0;
@@ -106,6 +132,70 @@ test("async TTL cache coalesces concurrent EKP snapshot loads", async () => {
   assert.strictEqual(first, cached);
   assert.notStrictEqual(first, refreshed);
   assert.equal(loadCount, 2);
+});
+
+test("probeLiveData reads only the first page and diagnoses the existing EKP row shape", async (context) => {
+  const envNames = [
+    "DATA_API_TOKEN",
+    "DATA_API_EMPLOYEE_CODE",
+    "DATA_API_MAX_RETRIES",
+    "DATA_API_PAGE_SIZE",
+    "DATA_API_MAX_PAGES",
+    "DATA_API_SALES_AMOUNT_FIELD",
+  ];
+  const previousEnv = Object.fromEntries(envNames.map((name) => [name, process.env[name]]));
+  context.after(() => {
+    for (const [name, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+  process.env.DATA_API_TOKEN = "secret-key";
+  process.env.DATA_API_EMPLOYEE_CODE = "E001";
+  process.env.DATA_API_MAX_RETRIES = "0";
+  process.env.DATA_API_PAGE_SIZE = "500";
+  process.env.DATA_API_MAX_PAGES = "40";
+  process.env.DATA_API_SALES_AMOUNT_FIELD = "amount";
+
+  const requests = [];
+  const fetchImpl = async (url) => {
+    const parsed = new URL(url);
+    requests.push(parsed);
+    let rows;
+    let total;
+    if (parsed.pathname.endsWith("/customer-employees")) {
+      rows = [{ employeeCode: "E001", customerCode: "C1", customerName: "客户一" }];
+      total = 1;
+    } else if (parsed.pathname.endsWith("/sales-targets")) {
+      rows = [{ employeeCode: "E001", date: "2026-08-01T00:00:00", targetAmount: "1000.00" }];
+      total = 1;
+    } else {
+      rows = [
+        { billLineId: "L1", customerCode: "C1", billDate: "2026-08-20", amount: "10.00" },
+        { billLineId: "L2", customerCode: "C1", billDate: "2026-08-19", amount: "20.00" },
+      ];
+      total = 50_000;
+    }
+    return new Response(JSON.stringify({
+      code: "OK",
+      data: { rows, page: 1, size: 5, total, totalPages: Math.ceil(total / 5) },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+
+  const result = await probeLiveData({
+    identity: { id: "demo", role: "customer-manager" },
+    fetchImpl,
+  });
+
+  assert.equal(requests.length, 3);
+  assert.ok(requests.every((url) => url.searchParams.get("page") === "1" && url.searchParams.get("size") === "5"));
+  assert.equal(requests[2].searchParams.get("customerCode"), "C1");
+  assert.equal(result.resources.salesDeliveries.returnedRows, 2);
+  assert.equal(result.resources.salesDeliveries.total, 50_000);
+  assert.equal(result.diagnostics.customerFilterMatches, true);
+  assert.equal(result.diagnostics.billDateDescending, true);
+  assert.deepEqual(result.diagnostics.availableAmountFields, ["amount"]);
+  assert.equal(result.diagnostics.deliveryExceedsBoardPageLimit, true);
 });
 
 test("fetchScopedDeliveries queries each assigned customer and deduplicates delivery lines", async () => {
