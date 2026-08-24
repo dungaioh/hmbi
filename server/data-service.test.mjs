@@ -6,6 +6,7 @@ import {
   extractRows,
   fetchAllRows,
   fetchScopedDeliveries,
+  getBoardData,
   probeLiveData,
 } from "./data-service.mjs";
 
@@ -198,6 +199,53 @@ test("probeLiveData reads only the first page and diagnoses the existing EKP row
   assert.equal(result.diagnostics.deliveryExceedsBoardPageLimit, true);
 });
 
+test("probeLiveData can discover an existing employee without using the configured placeholder", async (context) => {
+  const previousToken = process.env.DATA_API_TOKEN;
+  const previousEmployee = process.env.DATA_API_EMPLOYEE_CODE;
+  context.after(() => {
+    if (previousToken === undefined) delete process.env.DATA_API_TOKEN;
+    else process.env.DATA_API_TOKEN = previousToken;
+    if (previousEmployee === undefined) delete process.env.DATA_API_EMPLOYEE_CODE;
+    else process.env.DATA_API_EMPLOYEE_CODE = previousEmployee;
+  });
+  process.env.DATA_API_TOKEN = "secret-key";
+  process.env.DATA_API_EMPLOYEE_CODE = "E10086";
+
+  const requests = [];
+  const fetchImpl = async (url) => {
+    const parsed = new URL(url);
+    requests.push(parsed);
+    let rows;
+    if (parsed.pathname.endsWith("/customer-employees")) {
+      rows = [
+        { employeeCode: "E002", employeeName: "员工二", customerCode: "C2", customerName: "客户二" },
+        { employeeCode: "E003", employeeName: "员工三", customerCode: "C3", customerName: "客户三" },
+      ];
+    } else if (parsed.pathname.endsWith("/sales-targets")) {
+      rows = [{ employeeCode: "E002", date: "2026-08-01T00:00:00", targetAmount: "1000.00" }];
+    } else {
+      rows = [{ billLineId: "L2", customerCode: "C2", billDate: "2026-08-20", amount: "10.00" }];
+    }
+    return new Response(JSON.stringify({
+      code: "OK",
+      data: { rows, page: 1, size: 5, total: rows.length, totalPages: 1 },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+
+  const result = await probeLiveData({
+    identity: { id: "demo", role: "customer-manager" },
+    discoverEmployees: true,
+    fetchImpl,
+  });
+
+  assert.equal(requests[0].searchParams.has("employeeCode"), false);
+  assert.equal(requests[1].searchParams.get("employeeCode"), "E002");
+  assert.equal(requests[2].searchParams.get("customerCode"), "C2");
+  assert.equal(result.configuredEmployeeCode, "E10086");
+  assert.equal(result.selectedEmployeeCode, "E002");
+  assert.deepEqual(result.discoveredEmployees.map((employee) => employee.employeeCode), ["E002", "E003"]);
+});
+
 test("fetchScopedDeliveries queries each assigned customer and deduplicates delivery lines", async () => {
   const requests = [];
   const fetchImpl = async (url) => {
@@ -237,6 +285,69 @@ test("fetchScopedDeliveries queries each assigned customer and deduplicates deli
   assert.deepEqual(result.rows.map((row) => row.billLineId).sort(), ["L1", "L2", "SHARED"]);
   assert.equal(result.scope, "customerCode");
   assert.equal(result.queryCount, 2);
+});
+
+test("fetchScopedDeliveries never falls back to an unverified employee delivery query", async () => {
+  let requestCount = 0;
+  const result = await fetchScopedDeliveries({
+    baseUrl: "http://example.test:8098",
+    token: "secret-key",
+    employeeCode: "E10086",
+    relationshipRows: [],
+    oldestRequiredPeriod: "2025-08",
+    fetchImpl: async () => {
+      requestCount += 1;
+      return new Response(JSON.stringify({
+        code: "OK",
+        data: { rows: [], page: 1, size: 500, total: 0 },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+
+  assert.equal(requestCount, 0);
+  assert.deepEqual(result, { rows: [], scope: "none", queryCount: 0 });
+});
+
+test("live board rejects an employee with no customer relationships before querying deliveries", async (context) => {
+  const envNames = [
+    "DATA_API_MODE",
+    "DATA_API_BASE_URL",
+    "DATA_API_TOKEN",
+    "DATA_API_EMPLOYEE_CODE",
+    "DATA_API_MAX_RETRIES",
+    "DATA_API_CACHE_TTL_MS",
+  ];
+  const previousEnv = Object.fromEntries(envNames.map((name) => [name, process.env[name]]));
+  const previousFetch = globalThis.fetch;
+  context.after(() => {
+    for (const [name, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    globalThis.fetch = previousFetch;
+  });
+  process.env.DATA_API_MODE = "live";
+  process.env.DATA_API_BASE_URL = "http://example.test:8098";
+  process.env.DATA_API_TOKEN = "secret-key";
+  process.env.DATA_API_EMPLOYEE_CODE = "E10086-NO-RELATION";
+  process.env.DATA_API_MAX_RETRIES = "0";
+  process.env.DATA_API_CACHE_TTL_MS = "0";
+
+  const requests = [];
+  globalThis.fetch = async (url) => {
+    requests.push(new URL(url));
+    return new Response(JSON.stringify({
+      code: "OK",
+      data: { rows: [], page: 1, size: 500, total: 0 },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+
+  await assert.rejects(getBoardData({
+    role: "customer-manager",
+    identity: { id: "demo", role: "customer-manager", roleName: "客户经理", name: "模拟", orgName: "模拟范围" },
+  }), /未找到员工 E10086-NO-RELATION 的客户关系/);
+  assert.equal(requests.length, 1);
+  assert.ok(requests[0].pathname.endsWith("/customer-employees"));
 });
 
 test("fetchScopedDeliveries exposes the customer code when one customer exceeds the page cap", async () => {

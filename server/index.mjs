@@ -85,8 +85,10 @@ app.get("/api/data-check", asyncRoute(async (request, response) => {
 app.get("/api/data-probe", asyncRoute(async (request, response) => {
   const role = resolveRole(request);
   const identity = getDemoIdentity(role);
+  const employeeCode = String(request.query.employeeCode || "").trim().slice(0, 128);
   const customerCode = String(request.query.customerCode || "").trim().slice(0, 128);
-  response.json(await probeLiveData({ identity, customerCode }));
+  const discoverEmployees = ["1", "true", "yes"].includes(String(request.query.discoverEmployees || "").toLowerCase());
+  response.json(await probeLiveData({ identity, employeeCode, customerCode, discoverEmployees }));
 }));
 
 app.get("/api/board", asyncRoute(async (request, response) => {

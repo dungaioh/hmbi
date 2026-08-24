@@ -306,11 +306,7 @@ export async function fetchScopedDeliveries({
   };
 
   if (!customerCodes.length) {
-    const rows = await fetchAllRows({
-      ...common,
-      params: { employeeCode, isDeleted: 0, sortBy: "billDate", direction: "desc" },
-    });
-    return { rows: deduplicateDeliveryRows(rows), scope: "employeeCode", queryCount: 1 };
+    return { rows: [], scope: "none", queryCount: 0 };
   }
 
   const results = new Array(customerCodes.length);
@@ -597,7 +593,13 @@ function dataConfig(identity, now = new Date()) {
   };
 }
 
-export async function probeLiveData({ identity, customerCode = "", fetchImpl = fetch }) {
+export async function probeLiveData({
+  identity,
+  employeeCode = "",
+  customerCode = "",
+  discoverEmployees = false,
+  fetchImpl = fetch,
+}) {
   const now = new Date();
   const config = dataConfig(identity, now);
   const common = {
@@ -609,18 +611,33 @@ export async function probeLiveData({ identity, customerCode = "", fetchImpl = f
     retryBaseDelayMs: config.retryBaseDelayMs,
     fetchImpl,
   };
+  const configuredEmployeeCode = config.employeeCode;
+  const requestedEmployeeCode = String(employeeCode || "").trim();
+  const relationshipEmployeeCode = requestedEmployeeCode || (discoverEmployees ? "" : configuredEmployeeCode);
 
   const relationships = await probeResource({
     common,
     resource: "customer-employees",
-    params: { employeeCode: config.employeeCode, sortBy: "customerCode", direction: "asc" },
+    params: {
+      employeeCode: relationshipEmployeeCode,
+      sortBy: discoverEmployees && !requestedEmployeeCode ? "employeeCode" : "customerCode",
+      direction: "asc",
+    },
   });
-  const selectedCustomerCode = String(customerCode || relationships.rows[0]?.customerCode || "").trim();
-  const targets = await probeResource({
-    common,
-    resource: "sales-targets",
-    params: { employeeCode: config.employeeCode, sortBy: "date", direction: "desc" },
-  });
+  const requestedCustomerCode = String(customerCode || "").trim();
+  const selectedRelationship = relationships.rows.find((row) => String(row?.customerCode || "").trim() === requestedCustomerCode)
+    || relationships.rows[0];
+  const selectedEmployeeCode = requestedEmployeeCode
+    || String(selectedRelationship?.employeeCode || relationshipEmployeeCode || "").trim();
+  const selectedCustomerCode = requestedCustomerCode
+    || String(selectedRelationship?.customerCode || "").trim();
+  const targets = selectedEmployeeCode
+    ? await probeResource({
+      common,
+      resource: "sales-targets",
+      params: { employeeCode: selectedEmployeeCode, sortBy: "date", direction: "desc" },
+    })
+    : { rows: [], summary: { skipped: true, reason: "没有可用于探测的 employeeCode" } };
   const deliveries = selectedCustomerCode
     ? await probeResource({
       common,
@@ -634,12 +651,20 @@ export async function probeLiveData({ identity, customerCode = "", fetchImpl = f
     .filter((item) => Number.isFinite(item.time));
   const availableAmountFields = AMOUNT_FIELD_CANDIDATES.filter((field) => deliveries.summary.fields?.includes(field));
   const deliveryCapacity = Math.max(1, config.pageSize) * Math.max(1, config.maxPages);
+  const discoveredEmployees = [...new Map(relationships.rows
+    .filter((row) => row?.employeeCode)
+    .map((row) => [String(row.employeeCode), {
+      employeeCode: String(row.employeeCode),
+      employeeName: row.employeeName == null ? null : String(row.employeeName),
+    }])).values()];
   return {
     ok: true,
     mode: "probe",
     message: "仅取每个资源第一页用于验证 EKP 数据结构；这些样本不能作为完整 BI 指标。",
-    employeeCode: config.employeeCode,
+    configuredEmployeeCode,
+    selectedEmployeeCode: selectedEmployeeCode || null,
     selectedCustomerCode: selectedCustomerCode || null,
+    discoveredEmployees,
     resources: {
       customerEmployees: relationships.summary,
       salesTargets: targets.summary,
@@ -679,6 +704,12 @@ async function fetchLiveSnapshot({ identity, config, now = new Date() }) {
     resource: "customer-employees",
     params: { employeeCode: config.employeeCode, sortBy: "customerCode", direction: "asc" },
   });
+  if (!relationshipRows.length) {
+    throw exposedError(`EKP 未找到员工 ${config.employeeCode} 的客户关系`, {
+      status: 422,
+      detail: "请使用 /api/data-probe?discoverEmployees=1 查找真实 employeeCode，然后更新 DATA_API_EMPLOYEE_CODE",
+    });
+  }
   const targetRows = await fetchAllRows({
     ...common,
     resource: "sales-targets",

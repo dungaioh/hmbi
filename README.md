@@ -139,6 +139,20 @@ curl -sS 'http://127.0.0.1:8787/api/data-probe?role=customer-manager'
 - `diagnostics.availableAmountFields`：把返回字段写入 `DATA_API_SALES_AMOUNT_FIELD`；
 - `diagnostics.deliveryExceedsBoardPageLimit`：若为 `true`，证明普通分页不适合直接驱动完整 BI。
 
+如果 `customerEmployees.returnedRows` 为 0，说明 `DATA_API_EMPLOYEE_CODE` 没有匹配到客户关系。此时不要继续用该工号拉出库；用发现模式安全读取 5 条关系样本：
+
+```bash
+curl -sS 'http://127.0.0.1:8787/api/data-probe?role=customer-manager&discoverEmployees=1'
+```
+
+从 `discoveredEmployees` 选择一个真实 `employeeCode`，无需重启即可继续探测：
+
+```bash
+curl -sS 'http://127.0.0.1:8787/api/data-probe?role=customer-manager&employeeCode=真实工号'
+```
+
+确认客户关系、目标和出库样本后，再把该工号写入 `.env.local` 的 `DATA_API_EMPLOYEE_CODE` 并重启服务。完整看板在客户关系为空时会直接提示工号无效，不再回退到不安全的宽范围出库查询。
+
 也可以指定一个已知客户，只读取该客户的 5 行样本：
 
 ```bash
