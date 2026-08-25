@@ -88,6 +88,8 @@ curl -sS http://183.63.194.18:8098/v3/api-docs -o ekp-openapi.json
 
 Agent 只生成“客观事实 + 建议动作类型 + 行动价值”，禁止推断真因或评价人员。接口实现位于 `server/agent.mjs`，使用 DeepSeek 官方 OpenAI 兼容端点与 `deepseek-v4-flash`。DeepSeek 官方文档确认该模型支持 JSON 输出和 Tool Calls：[模型说明](https://api-docs.deepseek.com/quick_start/pricing)、[Tool Calls](https://api-docs.deepseek.com/guides/tool_calls)。
 
+首屏 `/api/board` 只等待经营指标，不等待 DeepSeek；指标返回后页面立即展示，并在后台调用 `/api/agent/refresh` 更新行动卡。指标请求客户端上限为 120 秒，Agent 请求上限为 45 秒，超时会显示独立错误，不会让整页一直停在同一个加载状态。
+
 ```dotenv
 DEEPSEEK_API_KEY=
 DEEPSEEK_BASE_URL=https://api.deepseek.com

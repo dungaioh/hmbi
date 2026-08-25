@@ -53,18 +53,55 @@ function useBoard(role: Role) {
   const [data, setData] = useState<BoardResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const requestIdRef = useRef(0);
 
   const load = useCallback(async (forceAgent = false) => {
+    const requestId = ++requestIdRef.current;
     setLoading(true);
     setError(null);
     try {
       const path = forceAgent ? "/api/agent/refresh" : "/api/board";
-      const result = await apiFetch<BoardResponse>(`${path}?role=${role}`, { method: forceAgent ? "POST" : "GET" });
+      const forceQuery = forceAgent ? "&force=1" : "";
+      const result = await apiFetch<BoardResponse>(
+        `${path}?role=${role}${forceQuery}`,
+        { method: forceAgent ? "POST" : "GET" },
+        forceAgent ? 45_000 : 120_000,
+      );
+      if (requestId !== requestIdRef.current) return;
       setData(result);
+      if (!forceAgent) {
+        setLoading(false);
+        void apiFetch<BoardResponse>(`/api/agent/refresh?role=${role}`, { method: "POST" }, 45_000)
+          .then((agentBoard) => {
+            if (requestId === requestIdRef.current) setData(agentBoard);
+          })
+          .catch((agentError) => {
+            if (requestId !== requestIdRef.current) return;
+            setData((current) => current ? {
+              ...current,
+              agent: {
+                state: "error",
+                summary: "指标已加载，行动 Agent 暂时未完成分析。",
+                actions: [],
+                generatedAt: null,
+                detail: agentError instanceof Error ? agentError.message : "Agent 请求失败",
+              },
+            } : current);
+          });
+      }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "加载失败");
+      if (requestId !== requestIdRef.current) return;
+      const message = caught instanceof Error ? caught.message : "加载失败";
+      if (forceAgent) {
+        setData((current) => current ? {
+          ...current,
+          agent: { state: "error", summary: "行动 Agent 暂时未完成分析。", actions: [], generatedAt: null, detail: message },
+        } : current);
+      } else {
+        setError(message);
+      }
     } finally {
-      setLoading(false);
+      if (requestId === requestIdRef.current) setLoading(false);
     }
   }, [role]);
 
@@ -197,22 +234,23 @@ function ActionCard({ action, index }: { action: AgentAction; index: number }) {
 
 function AgentSection({ board, refreshing, onRefresh }: { board: BoardResponse; refreshing: boolean; onRefresh: () => void }) {
   const ready = board.agent.state === "ready";
+  const pending = board.agent.state === "pending";
   return (
     <section className="agent-section">
-      <SectionHeading kicker="AUTONOMOUS AGENT" title="今日行动建议" action={<button className="secondary-button" disabled={refreshing} onClick={onRefresh}>{refreshing ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />}重新分析</button>} />
+      <SectionHeading kicker="AUTONOMOUS AGENT" title="今日行动建议" action={<button className="secondary-button" disabled={refreshing || pending} onClick={onRefresh}>{refreshing || pending ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />}{pending ? "正在分析" : "重新分析"}</button>} />
       <div className="agent-status-card">
         <div className={`agent-orb ${ready ? "ready" : "warning"}`}><Bot size={20} /></div>
-        <div><strong>{ready ? board.agent.summary : board.agent.state === "error" ? "Agent 暂时不可用" : "等待 Agent 配置"}</strong><p>{ready ? `基于 ${board.agent.actions.length} 条高价值事实自主排序 · ${shortDate(board.agent.generatedAt)}` : board.agent.summary}</p></div>
+        <div><strong>{ready ? board.agent.summary : pending ? "经营指标已加载，Agent 正在分析" : board.agent.state === "error" ? "Agent 暂时不可用" : "等待 Agent 配置"}</strong><p>{ready ? `基于 ${board.agent.actions.length} 条高价值事实自主排序 · ${shortDate(board.agent.generatedAt)}` : board.agent.summary}</p></div>
         {ready && <span className="agent-model">{board.agent.cached ? "智能缓存" : "刚刚生成"}</span>}
       </div>
-      {ready ? <div className="action-list">{board.agent.actions.map((action, index) => <ActionCard key={action.id} action={action} index={index} />)}</div> : <div className="empty-actions"><CircleAlert size={22} /><div><strong>没有用静态规则冒充 AI 建议</strong><p>{board.agent.detail || "确认服务端 DeepSeek 配置后点击重新分析。"}</p></div></div>}
+      {ready ? <div className="action-list">{board.agent.actions.map((action, index) => <ActionCard key={action.id} action={action} index={index} />)}</div> : pending ? <div className="empty-actions"><LoaderCircle className="spin" size={22} /><div><strong>正在基于本次指标生成行动建议</strong><p>你可以先查看指标和经营全景，不必等待 Agent 完成。</p></div></div> : <div className="empty-actions"><CircleAlert size={22} /><div><strong>没有用静态规则冒充 AI 建议</strong><p>{board.agent.detail || "确认服务端 DeepSeek 配置后点击重新分析。"}</p></div></div>}
       <div className="ai-constitution"><ShieldCheck size={16} /><span>AI 仅呈现数据事实与建议动作类型，不下真因结论、不评价人；具体判断由销售负责人决定。</span></div>
     </section>
   );
 }
 
 function LoadingScreen() {
-  return <div className="loading-screen"><div className="loader-mark"><BrandMark /><span /></div><strong>正在汇总经营事实</strong><p>同步指标并请求行动 Agent…</p></div>;
+  return <div className="loading-screen"><div className="loader-mark"><BrandMark /><span /></div><strong>正在读取 EKP 经营指标</strong><p>首次读取可能较慢；超过 120 秒会显示具体错误。</p></div>;
 }
 
 function ErrorState({ message, onRetry }: { message: string; onRetry: () => void }) {

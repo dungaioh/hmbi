@@ -8,6 +8,7 @@ import { allowedRoles, getDemoIdentity } from "./demo-data.mjs";
 import { getBoardData, probeLiveData } from "./data-service.mjs";
 import { answerDataQuestion, generateActions } from "./agent.mjs";
 import { adminTokenMatches } from "./auth.mjs";
+import { composeBoard } from "./board-service.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 dotenv.config({ path: path.join(root, ".env.local") });
@@ -34,25 +35,7 @@ function requireAdmin(request, response, next) {
   next();
 }
 
-async function composeBoard(role, forceAgent = false) {
-  const [cards, catalog] = await Promise.all([getCards(), getMetricCatalog()]);
-  const identity = getDemoIdentity(role);
-  const { snapshot, source } = await getBoardData({ role, identity, catalog });
-  const agent = await generateActions(snapshot, catalog, { force: forceAgent });
-  return {
-    identity: snapshot.identity,
-    period: snapshot.period,
-    asOf: snapshot.asOf,
-    source,
-    metrics: snapshot.metrics,
-    trend: snapshot.trend,
-    trendLabels: snapshot.trendLabels,
-    categoryMix: snapshot.categoryMix,
-    cards: cards.filter((card) => card.enabled).sort((a, b) => a.order - b.order),
-    catalog,
-    agent,
-  };
-}
+const boardDependencies = { getCards, getMetricCatalog, getDemoIdentity, getBoardData, generateActions };
 
 app.get("/api/health", (_request, response) => {
   response.json({
@@ -92,11 +75,12 @@ app.get("/api/data-probe", asyncRoute(async (request, response) => {
 }));
 
 app.get("/api/board", asyncRoute(async (request, response) => {
-  response.json(await composeBoard(resolveRole(request), false));
+  response.json(await composeBoard(resolveRole(request), { includeAgent: false }, boardDependencies));
 }));
 
 app.post("/api/agent/refresh", asyncRoute(async (request, response) => {
-  response.json(await composeBoard(resolveRole(request), true));
+  const forceAgent = ["1", "true", "yes"].includes(String(request.query.force || "").toLowerCase());
+  response.json(await composeBoard(resolveRole(request), { includeAgent: true, forceAgent }, boardDependencies));
 }));
 
 app.post("/api/chat", asyncRoute(async (request, response) => {

@@ -67,7 +67,7 @@ export interface BoardResponse {
   cards: CardConfig[];
   catalog: MetricDefinition[];
   agent: {
-    state: "ready" | "error" | "unavailable";
+    state: "pending" | "ready" | "error" | "unavailable";
     summary: string;
     actions: AgentAction[];
     generatedAt: string | null;
